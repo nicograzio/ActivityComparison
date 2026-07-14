@@ -27,11 +27,13 @@ class MapWidget(QGraphicsView):
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def wheelEvent(self, event):
-        self.scale(self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor, self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor)
+        factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
+        self.scale(factor, factor)
 
     def geo_to_pixel(self, lat, lon, zoom):
         size = self.TILE_SIZE * (2 ** zoom)
-        return ((lon + 180) / 360 * size, (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size)
+        return ((lon + 180) / 360 * size,
+                (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size)
 
     def clear_track(self):
         for item in self.track_items:
@@ -50,11 +52,16 @@ class MapWidget(QGraphicsView):
             if os.path.exists(cache):
                 pixmap.load(cache)
             else:
-                r = requests.get(f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png", headers={"User-Agent": "ActivityComparison/1.0"}, timeout=10)
+                r = requests.get(
+                    f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png",
+                    headers={"User-Agent": "ActivityComparison/1.0"},
+                    timeout=10
+                )
                 r.raise_for_status()
                 with open(cache, "wb") as f:
                     f.write(r.content)
                 pixmap.loadFromData(r.content)
+
             if not pixmap.isNull():
                 item = QGraphicsPixmapItem(pixmap)
                 item.setPos(px, py)
@@ -82,6 +89,18 @@ class MapWidget(QGraphicsView):
         if span > 0.005: return 15
         return 16
 
+    def get_segment_value(self, point, color_mode):
+        if color_mode == "Velocità":
+            speed = getattr(point, "speed", None)
+            if speed is None:
+                return None
+            return speed * 3.6
+
+        if color_mode == "Pendenza":
+            return None
+
+        return None
+
     def draw_track(self, track, color_mode="Nessuna", minimum=None, maximum=None):
         self.clear_track()
         if len(track.points) < 2:
@@ -106,8 +125,9 @@ class MapWidget(QGraphicsView):
             x2, y2 = self.geo_to_pixel(b.latitude, b.longitude, self.zoom_level)
 
             color = Qt.GlobalColor.blue
-            if color_mode != "Nessuna" and minimum is not None and maximum is not None:
-                value = getattr(b, "speed", 0) * 3.6 if color_mode == "Velocità" else 0
+            value = self.get_segment_value(b, color_mode)
+
+            if value is not None and minimum is not None and maximum is not None:
                 color = value_to_color(value, minimum, maximum)
 
             item = QGraphicsLineItem(x1 - ox, y1 - oy, x2 - ox, y2 - oy)
