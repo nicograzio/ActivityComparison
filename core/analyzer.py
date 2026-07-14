@@ -14,7 +14,9 @@ def haversine_distance(a, b):
 
 def calculate_point_speed(previous, current):
     speed = getattr(current, "speed", None)
-    if speed is not None:
+
+    # FIT stores speed in m/s. Ignore invalid values.
+    if isinstance(speed, (int, float)) and speed >= 0:
         return speed * 3.6
 
     time_a = getattr(previous, "timestamp", None)
@@ -23,19 +25,27 @@ def calculate_point_speed(previous, current):
     if time_a is None or time_b is None:
         return None
 
-    seconds = (time_b - time_a).total_seconds()
+    try:
+        seconds = (time_b - time_a).total_seconds()
+    except Exception:
+        return None
+
     if seconds <= 0:
         return None
 
-    return (haversine_distance(previous, current) / seconds) * 3.6
+    distance = haversine_distance(previous, current)
+
+    if distance <= 0:
+        return None
+
+    return (distance / seconds) * 3.6
 
 
 def calculate_speed_range(track):
     values = []
-    points = track.points
 
-    for i in range(1, len(points)):
-        speed = calculate_point_speed(points[i - 1], points[i])
+    for i in range(1, len(track.points)):
+        speed = calculate_point_speed(track.points[i - 1], track.points[i])
         if speed is not None:
             values.append(speed)
 
@@ -46,20 +56,20 @@ def calculate_speed_range(track):
 
 
 def calculate_slope_range(track):
-    slopes = []
+    values = []
 
-    points = track.points
-    for i in range(1, len(points)):
-        previous = points[i - 1]
-        current = points[i]
+    for i in range(1, len(track.points)):
+        previous = track.points[i - 1]
+        current = track.points[i]
 
         distance = haversine_distance(previous, current)
-        elevation_diff = getattr(current, "elevation", 0) - getattr(previous, "elevation", 0)
+        previous_alt = getattr(previous, "altitude", 0) or 0
+        current_alt = getattr(current, "altitude", 0) or 0
 
         if distance > 0:
-            slopes.append((elevation_diff / distance) * 100)
+            values.append(((current_alt - previous_alt) / distance) * 100)
 
-    if not slopes:
+    if not values:
         return 0.0, 0.0
 
-    return min(slopes), max(slopes)
+    return min(values), max(values)
