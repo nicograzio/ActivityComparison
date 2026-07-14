@@ -8,11 +8,14 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFileDialog,
     QMessageBox,
+    QComboBox,
+    QLineEdit,
 )
 
 from ui.map_widget import MapWidget
 from core.gpx_loader import load_gpx
 from core.fit_loader import load_fit
+from core.analyzer import calculate_speed_range, calculate_slope_range
 
 
 class TrackPanel(QWidget):
@@ -29,23 +32,54 @@ class TrackPanel(QWidget):
         self.import_button.clicked.connect(self.import_file)
         toolbar.addWidget(self.import_button)
 
+        self.file_label = QLabel("File: nessun file caricato")
+        toolbar.addWidget(self.file_label)
+
         toolbar.addStretch()
 
-        self.slope_button = QPushButton("Pendenza")
-        self.speed_button = QPushButton("Velocità")
+        toolbar.addWidget(QLabel("Colora per:"))
 
-        toolbar.addWidget(self.slope_button)
-        toolbar.addWidget(self.speed_button)
+        self.color_mode = QComboBox()
+        self.color_mode.addItems([
+            "Nessuna",
+            "Velocità",
+            "Pendenza"
+        ])
+        self.color_mode.currentTextChanged.connect(self.update_scale)
+        toolbar.addWidget(self.color_mode)
+
+        toolbar.addWidget(QLabel("Min:"))
+        self.min_value = QLineEdit()
+        self.min_value.setFixedWidth(70)
+        toolbar.addWidget(self.min_value)
+
+        toolbar.addWidget(QLabel("Max:"))
+        self.max_value = QLineEdit()
+        self.max_value.setFixedWidth(70)
+        toolbar.addWidget(self.max_value)
 
         layout.addLayout(toolbar)
-
-        self.file_label = QLabel("File: nessun file caricato")
-        layout.addWidget(self.file_label)
 
         self.map = MapWidget()
         layout.addWidget(self.map)
 
         self.setLayout(layout)
+
+    def update_scale(self):
+        if not self.track:
+            return
+
+        mode = self.color_mode.currentText()
+
+        if mode == "Velocità":
+            minimum, maximum = calculate_speed_range(self.track)
+        elif mode == "Pendenza":
+            minimum, maximum = calculate_slope_range(self.track)
+        else:
+            minimum, maximum = 0, 0
+
+        self.min_value.setText(f"{minimum:.1f}")
+        self.max_value.setText(f"{maximum:.1f}")
 
     def import_file(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -73,6 +107,7 @@ class TrackPanel(QWidget):
             )
 
             self.map.draw_track(self.track)
+            self.update_scale()
 
         except Exception as error:
             QMessageBox.critical(
