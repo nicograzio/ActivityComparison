@@ -7,7 +7,9 @@ from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QG
 
 
 class MapWidget(QGraphicsView):
-    """Interactive map widget with OSM tile foundation."""
+    """Interactive GPS map with OpenStreetMap background."""
+
+    TILE_SIZE = 256
 
     def __init__(self):
         super().__init__()
@@ -26,14 +28,11 @@ class MapWidget(QGraphicsView):
         self.zoom_factor = 1.15
         self.track_item = None
         self.tile_items = []
-
-        self.setBackgroundBrush(Qt.GlobalColor.lightGray)
+        self.zoom_level = 15
 
     def wheelEvent(self, event):
-        if event.angleDelta().y() > 0:
-            self.scale(self.zoom_factor, self.zoom_factor)
-        else:
-            self.scale(1 / self.zoom_factor, 1 / self.zoom_factor)
+        factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
+        self.scale(factor, factor)
 
     def clear_track(self):
         if self.track_item:
@@ -45,7 +44,13 @@ class MapWidget(QGraphicsView):
             self.scene.removeItem(item)
         self.tile_items.clear()
 
-    def add_osm_tile(self, x, y, zoom, px, py):
+    def geo_to_pixel(self, lat, lon, zoom):
+        size = self.TILE_SIZE * (2 ** zoom)
+        x = (lon + 180) / 360 * size
+        y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size
+        return x, y
+
+    def add_tile(self, x, y, zoom, px, py):
         url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
 
         try:
@@ -62,14 +67,24 @@ class MapWidget(QGraphicsView):
         except Exception:
             pass
 
-    def load_tiles_for_point(self, latitude, longitude, zoom=15):
+    def load_map_area(self, latitude, longitude):
         self.clear_tiles()
 
-        n = 2 ** zoom
-        x = int((longitude + 180) / 360 * n)
-        y = int((1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * n)
+        zoom = self.zoom_level
+        center_x, center_y = self.geo_to_pixel(latitude, longitude, zoom)
 
-        self.add_osm_tile(x, y, zoom, -128, -128)
+        tile_x = int(center_x // self.TILE_SIZE)
+        tile_y = int(center_y // self.TILE_SIZE)
+
+        for x in range(tile_x - 2, tile_x + 3):
+            for y in range(tile_y - 2, tile_y + 3):
+                self.add_tile(
+                    x,
+                    y,
+                    zoom,
+                    x * self.TILE_SIZE - center_x,
+                    y * self.TILE_SIZE - center_y
+                )
 
     def draw_track(self, track):
         self.clear_track()
@@ -77,30 +92,32 @@ class MapWidget(QGraphicsView):
         if len(track.points) < 2:
             return
 
-        self.load_tiles_for_point(
-            track.points[0].latitude,
-            track.points[0].longitude
-        )
+        first = track.points[0]
+        self.load_map_area(first.latitude, first.longitude)
 
         path = QPainterPath()
-        points = track.points
+        zoom = self.zoom_level
 
-        origin_lat = points[0].latitude
-        origin_lon = points[0].longitude
-        scale = 100000
+        origin_x, origin_y = self.geo_to_pixel(
+            first.latitude,
+            first.longitude,
+            zoom
+        )
 
         path.moveTo(0, 0)
 
-        for point in points[1:]:
-            path.lineTo(
-                (point.longitude - origin_lon) * scale,
-                -(point.latitude - origin_lat) * scale
+        for point in track.points[1:]:
+            x, y = self.geo_to_pixel(
+                point.latitude,
+                point.longitude,
+                zoom
             )
+            path.lineTo(x - origin_x, y - origin_y)
 
         self.track_item = QGraphicsPathItem(path)
-        self.track_item.setPen(QPen(Qt.GlobalColor.blue, 3))
-
+        self.track_item.setPen(QPen(Qt.GlobalColor.blue, 4))
         self.scene.addItem(self.track_item)
+
         self.fitInView(
             self.track_item,
             Qt.AspectRatioMode.KeepAspectRatio
