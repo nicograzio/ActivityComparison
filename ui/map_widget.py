@@ -7,6 +7,7 @@ from PyQt6.QtGui import QPen, QPixmap
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsLineItem, QGraphicsPixmapItem
 
 from core.colorizer import value_to_color
+from core.analyzer import calculate_point_speed
 
 
 class MapWidget(QGraphicsView):
@@ -52,16 +53,11 @@ class MapWidget(QGraphicsView):
             if os.path.exists(cache):
                 pixmap.load(cache)
             else:
-                r = requests.get(
-                    f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png",
-                    headers={"User-Agent": "ActivityComparison/1.0"},
-                    timeout=10
-                )
+                r = requests.get(f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png", headers={"User-Agent": "ActivityComparison/1.0"}, timeout=10)
                 r.raise_for_status()
                 with open(cache, "wb") as f:
                     f.write(r.content)
                 pixmap.loadFromData(r.content)
-
             if not pixmap.isNull():
                 item = QGraphicsPixmapItem(pixmap)
                 item.setPos(px, py)
@@ -89,19 +85,15 @@ class MapWidget(QGraphicsView):
         if span > 0.005: return 15
         return 16
 
-    def get_segment_value(self, point, color_mode):
+    def get_segment_value(self, previous, point, color_mode):
         if color_mode == "Velocità":
-            speed = getattr(point, "speed", None)
-            if speed is None:
-                return None
-            return speed * 3.6
-
-        if color_mode == "Pendenza":
-            return None
-
+            return calculate_point_speed(previous, point)
         return None
 
     def draw_track(self, track, color_mode="Nessuna", minimum=None, maximum=None):
+        old_transform = self.transform()
+        old_center = self.mapToScene(self.viewport().rect().center())
+
         self.clear_track()
         if len(track.points) < 2:
             return
@@ -125,8 +117,7 @@ class MapWidget(QGraphicsView):
             x2, y2 = self.geo_to_pixel(b.latitude, b.longitude, self.zoom_level)
 
             color = Qt.GlobalColor.blue
-            value = self.get_segment_value(b, color_mode)
-
+            value = self.get_segment_value(a, b, color_mode)
             if value is not None and minimum is not None and maximum is not None:
                 color = value_to_color(value, minimum, maximum)
 
@@ -136,4 +127,7 @@ class MapWidget(QGraphicsView):
             self.scene.addItem(item)
             self.track_items.append(item)
 
-        self.fitInView(self.scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        if not self.track_items:
+            return
+        self.setTransform(old_transform)
+        self.centerOn(old_center)
