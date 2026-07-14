@@ -19,12 +19,8 @@ class MapWidget(QGraphicsView):
         self.setScene(self.scene)
 
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse
-        )
-        self.setResizeAnchor(
-            QGraphicsView.ViewportAnchor.AnchorViewCenter
-        )
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
         self.zoom_factor = 1.15
         self.track_item = None
@@ -55,13 +51,7 @@ class MapWidget(QGraphicsView):
         return x, y
 
     def add_tile(self, x, y, zoom, px, py):
-        if x < 0 or y < 0:
-            return
-
-        cache_file = os.path.join(
-            self.cache_dir,
-            f"{zoom}_{x}_{y}.png"
-        )
+        cache_file = os.path.join(self.cache_dir, f"{zoom}_{x}_{y}.png")
 
         try:
             pixmap = QPixmap()
@@ -70,13 +60,9 @@ class MapWidget(QGraphicsView):
                 pixmap.load(cache_file)
             else:
                 url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
-                headers = {
-                    "User-Agent": "ActivityComparison/1.0"
-                }
-
                 response = requests.get(
                     url,
-                    headers=headers,
+                    headers={"User-Agent": "ActivityComparison/1.0"},
                     timeout=10
                 )
                 response.raise_for_status()
@@ -86,8 +72,12 @@ class MapWidget(QGraphicsView):
 
                 pixmap.loadFromData(response.content)
 
+            if pixmap.isNull():
+                return
+
             item = QGraphicsPixmapItem(pixmap)
             item.setPos(px, py)
+            item.setZValue(0)
             self.scene.addItem(item)
             self.tile_items.append(item)
 
@@ -130,23 +120,11 @@ class MapWidget(QGraphicsView):
         self.load_map_area(center_lat, center_lon)
 
         path = QPainterPath()
-        zoom = self.zoom_level
-
-        origin_x, origin_y = self.geo_to_pixel(
-            center_lat,
-            center_lon,
-            zoom
-        )
+        origin_x, origin_y = self.geo_to_pixel(center_lat, center_lon, self.zoom_level)
 
         first = True
-
         for point in track.points:
-            x, y = self.geo_to_pixel(
-                point.latitude,
-                point.longitude,
-                zoom
-            )
-
+            x, y = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
             if first:
                 path.moveTo(x - origin_x, y - origin_y)
                 first = False
@@ -155,9 +133,15 @@ class MapWidget(QGraphicsView):
 
         self.track_item = QGraphicsPathItem(path)
         self.track_item.setPen(QPen(Qt.GlobalColor.blue, 4))
+        self.track_item.setZValue(10)
         self.scene.addItem(self.track_item)
 
+        self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-500, -500, 500, 500))
+
         self.fitInView(
-            self.track_item,
+            self.scene.sceneRect(),
             Qt.AspectRatioMode.KeepAspectRatio
         )
+
+        print("Tile caricate:", len(self.tile_items))
+        print("Scene rect:", self.scene.itemsBoundingRect())
