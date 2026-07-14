@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -5,9 +7,12 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QFileDialog,
+    QMessageBox,
 )
 
 from ui.map_widget import MapWidget
+from core.gpx_loader import load_gpx
+from core.fit_loader import load_fit
 
 
 class TrackPanel(QWidget):
@@ -50,7 +55,28 @@ class TrackPanel(QWidget):
             "Attività GPS (*.fit *.gpx)"
         )
 
-        if filename:
+        if not filename:
+            return
+
+        try:
+            extension = Path(filename).suffix.lower()
+
+            if extension == ".gpx":
+                self.track = load_gpx(filename)
+            elif extension == ".fit":
+                self.track = load_fit(filename)
+            else:
+                raise ValueError("Formato non supportato")
+
             self.file_label.setText(
-                f"File: {filename.split('/')[-1]}"
+                f"File: {Path(filename).name} - Punti: {len(self.track.points)}"
+            )
+
+            self.map.draw_track(self.track)
+
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Errore caricamento",
+                str(error)
             )
