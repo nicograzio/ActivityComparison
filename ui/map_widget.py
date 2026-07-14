@@ -27,8 +27,14 @@ class MapWidget(QGraphicsView):
         self.tile_items = []
         self.zoom_level = 15
         self.cache_dir = "cache/osm"
+        self.current_track = None
 
         os.makedirs(self.cache_dir, exist_ok=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.current_track:
+            self.fit_track()
 
     def wheelEvent(self, event):
         factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
@@ -87,23 +93,29 @@ class MapWidget(QGraphicsView):
     def load_map_area(self, latitude, longitude):
         self.clear_tiles()
 
-        zoom = self.zoom_level
-        center_x, center_y = self.geo_to_pixel(latitude, longitude, zoom)
-
+        center_x, center_y = self.geo_to_pixel(latitude, longitude, self.zoom_level)
         tile_x = int(center_x // self.TILE_SIZE)
         tile_y = int(center_y // self.TILE_SIZE)
 
-        for x in range(tile_x - 2, tile_x + 3):
-            for y in range(tile_y - 2, tile_y + 3):
+        for x in range(tile_x - 3, tile_x + 4):
+            for y in range(tile_y - 3, tile_y + 4):
                 self.add_tile(
                     x,
                     y,
-                    zoom,
+                    self.zoom_level,
                     x * self.TILE_SIZE - center_x,
                     y * self.TILE_SIZE - center_y
                 )
 
+    def fit_track(self):
+        if self.track_item:
+            self.fitInView(
+                self.track_item.boundingRect().adjusted(-300, -300, 300, 300),
+                Qt.AspectRatioMode.KeepAspectRatio
+            )
+
     def draw_track(self, track):
+        self.current_track = track
         self.clear_track()
 
         if len(track.points) < 2:
@@ -125,6 +137,7 @@ class MapWidget(QGraphicsView):
         first = True
         for point in track.points:
             x, y = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
+
             if first:
                 path.moveTo(x - origin_x, y - origin_y)
                 first = False
@@ -138,10 +151,4 @@ class MapWidget(QGraphicsView):
 
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-500, -500, 500, 500))
 
-        self.fitInView(
-            self.scene.sceneRect(),
-            Qt.AspectRatioMode.KeepAspectRatio
-        )
-
-        print("Tile caricate:", len(self.tile_items))
-        print("Scene rect:", self.scene.itemsBoundingRect())
+        self.fit_track()
