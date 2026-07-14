@@ -26,7 +26,6 @@ class TrackPanel(QWidget):
         toolbar.addWidget(QLabel("Colora per:"))
         self.color_mode = QComboBox()
         self.color_mode.addItems(["Nessuna", "Velocità", "Pendenza"])
-        self.color_mode.currentTextChanged.connect(self.update_scale)
         toolbar.addWidget(self.color_mode)
 
         toolbar.addWidget(QLabel("Min:"))
@@ -44,23 +43,31 @@ class TrackPanel(QWidget):
         layout.addWidget(self.map)
         self.setLayout(layout)
 
-        self.color_mode.currentTextChanged.connect(self.refresh_color)
+        self.color_mode.currentTextChanged.connect(self.update_scale)
         self.min_value.editingFinished.connect(self.refresh_color)
         self.max_value.editingFinished.connect(self.refresh_color)
 
     def refresh_color(self):
         if self.track:
-            self.map.draw_track(self.track, self.color_mode.currentText(), float(self.min_value.text() or 0), float(self.max_value.text() or 0))
+            self.map.draw_track(
+                self.track,
+                self.color_mode.currentText(),
+                float(self.min_value.text() or 0),
+                float(self.max_value.text() or 0)
+            )
 
     def update_scale(self):
         if not self.track:
             return
-        if self.color_mode.currentText() == "Velocità":
+
+        mode = self.color_mode.currentText()
+        if mode == "Velocità":
             minimum, maximum = calculate_speed_range(self.track)
-        elif self.color_mode.currentText() == "Pendenza":
+        elif mode == "Pendenza":
             minimum, maximum = calculate_slope_range(self.track)
         else:
             minimum, maximum = 0, 0
+
         self.min_value.setText(f"{minimum:.1f}")
         self.max_value.setText(f"{maximum:.1f}")
         self.refresh_color()
@@ -69,11 +76,14 @@ class TrackPanel(QWidget):
         filename, _ = QFileDialog.getOpenFileName(self, "Seleziona attività", "", "Attività GPS (*.fit *.gpx)")
         if not filename:
             return
+
         try:
             ext = Path(filename).suffix.lower()
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.file_label.setText(f"File: {Path(filename).name} - Punti: {len(self.track.points)}")
             self.update_scale()
-            self.map.draw_track(self.track, self.color_mode.currentText(), float(self.min_value.text() or 0), float(self.max_value.text() or 0))
+            if self.color_mode.currentText() == "Nessuna":
+                self.map.draw_track(self.track)
+
         except Exception as error:
             QMessageBox.critical(self, "Errore caricamento", str(error))
