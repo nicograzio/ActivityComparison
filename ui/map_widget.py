@@ -1,4 +1,5 @@
 import math
+import os
 import requests
 
 from PyQt6.QtCore import Qt
@@ -29,6 +30,9 @@ class MapWidget(QGraphicsView):
         self.track_item = None
         self.tile_items = []
         self.zoom_level = 15
+        self.cache_dir = "cache/osm"
+
+        os.makedirs(self.cache_dir, exist_ok=True)
 
     def wheelEvent(self, event):
         factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
@@ -51,21 +55,44 @@ class MapWidget(QGraphicsView):
         return x, y
 
     def add_tile(self, x, y, zoom, px, py):
-        url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+        if x < 0 or y < 0:
+            return
+
+        cache_file = os.path.join(
+            self.cache_dir,
+            f"{zoom}_{x}_{y}.png"
+        )
 
         try:
-            response = requests.get(url, timeout=5)
-            response.raise_for_status()
-
             pixmap = QPixmap()
-            pixmap.loadFromData(response.content)
+
+            if os.path.exists(cache_file):
+                pixmap.load(cache_file)
+            else:
+                url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+                headers = {
+                    "User-Agent": "ActivityComparison/1.0"
+                }
+
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=10
+                )
+                response.raise_for_status()
+
+                with open(cache_file, "wb") as file:
+                    file.write(response.content)
+
+                pixmap.loadFromData(response.content)
 
             item = QGraphicsPixmapItem(pixmap)
             item.setPos(px, py)
             self.scene.addItem(item)
             self.tile_items.append(item)
-        except Exception:
-            pass
+
+        except Exception as error:
+            print(f"Errore caricamento tile {x}/{y}: {error}")
 
     def load_map_area(self, latitude, longitude):
         self.clear_tiles()
@@ -92,27 +119,39 @@ class MapWidget(QGraphicsView):
         if len(track.points) < 2:
             return
 
-        first = track.points[0]
-        self.load_map_area(first.latitude, first.longitude)
+        min_lat = min(p.latitude for p in track.points)
+        max_lat = max(p.latitude for p in track.points)
+        min_lon = min(p.longitude for p in track.points)
+        max_lon = max(p.longitude for p in track.points)
+
+        center_lat = (min_lat + max_lat) / 2
+        center_lon = (min_lon + max_lon) / 2
+
+        self.load_map_area(center_lat, center_lon)
 
         path = QPainterPath()
         zoom = self.zoom_level
 
         origin_x, origin_y = self.geo_to_pixel(
-            first.latitude,
-            first.longitude,
+            center_lat,
+            center_lon,
             zoom
         )
 
-        path.moveTo(0, 0)
+        first = True
 
-        for point in track.points[1:]:
+        for point in track.points:
             x, y = self.geo_to_pixel(
                 point.latitude,
                 point.longitude,
                 zoom
             )
-            path.lineTo(x - origin_x, y - origin_y)
+
+            if first:
+                path.moveTo(x - origin_x, y - origin_y)
+                first = False
+            else:
+                path.lineTo(x - origin_x, y - origin_y)
 
         self.track_item = QGraphicsPathItem(path)
         self.track_item.setPen(QPen(Qt.GlobalColor.blue, 4))
