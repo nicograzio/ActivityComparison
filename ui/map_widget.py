@@ -1,18 +1,13 @@
+import math
+import requests
+
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPen, QPainterPath
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem
+from PyQt6.QtGui import QPen, QPainterPath, QPixmap
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsPixmapItem
 
 
 class MapWidget(QGraphicsView):
-    """
-    Native Qt map widget.
-
-    Prepared for:
-    - OpenStreetMap background tiles
-    - GPS track rendering
-    - segment coloring
-    - interactive navigation
-    """
+    """Interactive map widget with OSM tile foundation."""
 
     def __init__(self):
         super().__init__()
@@ -30,11 +25,11 @@ class MapWidget(QGraphicsView):
 
         self.zoom_factor = 1.15
         self.track_item = None
+        self.tile_items = []
 
         self.setBackgroundBrush(Qt.GlobalColor.lightGray)
 
     def wheelEvent(self, event):
-        """Zoom centered on mouse position."""
         if event.angleDelta().y() > 0:
             self.scale(self.zoom_factor, self.zoom_factor)
         else:
@@ -45,24 +40,56 @@ class MapWidget(QGraphicsView):
             self.scene.removeItem(self.track_item)
             self.track_item = None
 
+    def clear_tiles(self):
+        for item in self.tile_items:
+            self.scene.removeItem(item)
+        self.tile_items.clear()
+
+    def add_osm_tile(self, x, y, zoom, px, py):
+        url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+
+        try:
+            response = requests.get(url, timeout=5)
+            response.raise_for_status()
+
+            pixmap = QPixmap()
+            pixmap.loadFromData(response.content)
+
+            item = QGraphicsPixmapItem(pixmap)
+            item.setPos(px, py)
+            self.scene.addItem(item)
+            self.tile_items.append(item)
+        except Exception:
+            pass
+
+    def load_tiles_for_point(self, latitude, longitude, zoom=15):
+        self.clear_tiles()
+
+        n = 2 ** zoom
+        x = int((longitude + 180) / 360 * n)
+        y = int((1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * n)
+
+        self.add_osm_tile(x, y, zoom, -128, -128)
+
     def draw_track(self, track):
         self.clear_track()
 
         if len(track.points) < 2:
             return
 
+        self.load_tiles_for_point(
+            track.points[0].latitude,
+            track.points[0].longitude
+        )
+
         path = QPainterPath()
         points = track.points
 
         origin_lat = points[0].latitude
         origin_lon = points[0].longitude
-
         scale = 100000
 
-        path.moveTo(
-            (points[0].longitude - origin_lon) * scale,
-            -(points[0].latitude - origin_lat) * scale
-        )
+        path.moveTo(0, 0)
 
         for point in points[1:]:
             path.lineTo(
@@ -71,18 +98,10 @@ class MapWidget(QGraphicsView):
             )
 
         self.track_item = QGraphicsPathItem(path)
-        self.track_item.setPen(
-            QPen(Qt.GlobalColor.blue, 3)
-        )
+        self.track_item.setPen(QPen(Qt.GlobalColor.blue, 3))
 
         self.scene.addItem(self.track_item)
         self.fitInView(
             self.track_item,
             Qt.AspectRatioMode.KeepAspectRatio
         )
-
-    def mousePressEvent(self, event):
-        """Enable map panning with drag."""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        super().mousePressEvent(event)
