@@ -2,3 +2,5 @@ PyQt6
 requests
 Pillow
 numpy
+fitparse
+gpxpy
