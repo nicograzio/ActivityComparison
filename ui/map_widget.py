@@ -56,6 +56,26 @@ class MapWidget(QGraphicsView):
         y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size
         return x, y
 
+    def calculate_zoom(self, min_lat, max_lat, min_lon, max_lon):
+        """Calculate initial map zoom from track bounding box."""
+        latitude_span = max_lat - min_lat
+        longitude_span = max_lon - min_lon
+        max_span = max(latitude_span, longitude_span)
+
+        if max_span > 2:
+            return 8
+        if max_span > 1:
+            return 10
+        if max_span > 0.5:
+            return 12
+        if max_span > 0.1:
+            return 13
+        if max_span > 0.03:
+            return 14
+        if max_span > 0.01:
+            return 15
+        return 16
+
     def add_tile(self, x, y, zoom, px, py):
         cache_file = os.path.join(self.cache_dir, f"{zoom}_{x}_{y}.png")
 
@@ -125,6 +145,13 @@ class MapWidget(QGraphicsView):
         max_lat = max(p.latitude for p in track.points)
         min_lon = min(p.longitude for p in track.points)
         max_lon = max(p.longitude for p in track.points)
+
+        self.zoom_level = self.calculate_zoom(
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon
+        )
 
         center_lat = (min_lat + max_lat) / 2
         center_lon = (min_lon + max_lon) / 2
