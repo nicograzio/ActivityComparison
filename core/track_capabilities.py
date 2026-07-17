@@ -7,6 +7,21 @@ class TrackCapabilities:
         self.has_speed = self._has_speed(track)
         self.has_heart_rate = self._has_heart_rate(track)
 
+    @property
+    def available_modes(self):
+        modes = ["Nessuna"]
+
+        if self.has_speed:
+            modes.append("Velocità")
+
+        if self.has_elevation:
+            modes.append("Pendenza")
+
+        if self.has_heart_rate:
+            modes.append("Frequenza cardiaca")
+
+        return modes
+
     @staticmethod
     def _has_position(track):
         return all(
