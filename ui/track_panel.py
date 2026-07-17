@@ -2,7 +2,11 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit
 
-from ui.map_widget import MapWidget
+try:
+    from ui.vector_map_widget import VectorMapWidget as MapWidget
+except Exception:
+    from ui.map_widget import MapWidget
+
 from core.gpx_loader import load_gpx
 from core.fit_loader import load_fit
 from core.analyzer import calculate_speed_range, calculate_slope_range
