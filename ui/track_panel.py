@@ -6,12 +6,15 @@ from ui.map_widget import MapWidget
 from core.gpx_loader import load_gpx
 from core.fit_loader import load_fit
 from core.analyzer import calculate_speed_range, calculate_slope_range
+from core.track_capabilities import TrackCapabilities
 
 
 class TrackPanel(QWidget):
     def __init__(self, title):
         super().__init__()
         self.track = None
+        self.capabilities = None
+
         layout = QVBoxLayout()
         toolbar = QHBoxLayout()
 
@@ -25,7 +28,6 @@ class TrackPanel(QWidget):
 
         toolbar.addWidget(QLabel("Colora per:"))
         self.color_mode = QComboBox()
-        self.color_mode.addItems(["Nessuna", "Velocità", "Pendenza"])
         toolbar.addWidget(self.color_mode)
 
         toolbar.addWidget(QLabel("Min:"))
@@ -39,6 +41,10 @@ class TrackPanel(QWidget):
         toolbar.addWidget(self.max_value)
 
         layout.addLayout(toolbar)
+
+        self.info_label = QLabel("")
+        layout.addWidget(self.info_label)
+
         self.map = MapWidget()
         layout.addWidget(self.map)
         self.setLayout(layout)
@@ -68,9 +74,27 @@ class TrackPanel(QWidget):
         else:
             minimum, maximum = 0, 0
 
-        self.min_value.setText(f"{minimum:.1f}")
-        self.max_value.setText(f"{maximum:.1f}")
+        if minimum is not None and maximum is not None:
+            self.min_value.setText(f"{minimum:.1f}")
+            self.max_value.setText(f"{maximum:.1f}")
+        else:
+            self.min_value.clear()
+            self.max_value.clear()
+
         self.refresh_color()
+
+    def update_available_modes(self):
+        self.color_mode.blockSignals(True)
+        current = self.color_mode.currentText()
+        self.color_mode.clear()
+        self.color_mode.addItems(self.capabilities.available_modes())
+        if current in self.capabilities.available_modes():
+            self.color_mode.setCurrentText(current)
+        self.color_mode.blockSignals(False)
+
+    def show_summary(self):
+        summary = self.capabilities.summary()
+        self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
 
     def import_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Seleziona attività", "", "Attività GPS (*.fit *.gpx)")
@@ -80,8 +104,13 @@ class TrackPanel(QWidget):
         try:
             ext = Path(filename).suffix.lower()
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
+            self.capabilities = TrackCapabilities(self.track)
+
             self.file_label.setText(f"File: {Path(filename).name} - Punti: {len(self.track.points)}")
+            self.update_available_modes()
+            self.show_summary()
             self.update_scale()
+
             if self.color_mode.currentText() == "Nessuna":
                 self.map.draw_track(self.track)
 
