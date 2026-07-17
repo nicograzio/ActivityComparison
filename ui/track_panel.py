@@ -93,7 +93,7 @@ class TrackPanel(QWidget):
         self.color_mode.blockSignals(False)
 
     def show_summary(self):
-        summary = self.capabilities.summary()
+        summary = self.capabilities.summary
         self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
 
     def import_file(self):
