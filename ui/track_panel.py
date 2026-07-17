@@ -87,8 +87,8 @@ class TrackPanel(QWidget):
         self.color_mode.blockSignals(True)
         current = self.color_mode.currentText()
         self.color_mode.clear()
-        self.color_mode.addItems(self.capabilities.available_modes())
-        if current in self.capabilities.available_modes():
+        self.color_mode.addItems(self.capabilities.available_modes)
+        if current in self.capabilities.available_modes:
             self.color_mode.setCurrentText(current)
         self.color_mode.blockSignals(False)
 
