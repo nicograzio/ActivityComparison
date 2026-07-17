@@ -22,6 +22,17 @@ class TrackCapabilities:
 
         return modes
 
+    @property
+    def summary(self):
+        return {
+            "points": self.points,
+            "gps": self.has_position,
+            "elevation": self.has_elevation,
+            "timestamp": self.has_timestamp,
+            "speed": self.has_speed,
+            "heart_rate": self.has_heart_rate,
+        }
+
     @staticmethod
     def _has_position(track):
         return all(
