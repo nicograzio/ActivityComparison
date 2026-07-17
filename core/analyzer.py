@@ -1,7 +1,5 @@
 import math
 
-DEBUG_SPEED = True
-
 
 def haversine_distance(a, b):
     radius = 6371000
@@ -16,61 +14,42 @@ def haversine_distance(a, b):
 
 def calculate_point_speed(previous, current):
     speed = getattr(current, "speed", None)
-    calculated = None
 
     if isinstance(speed, (int, float)) and speed >= 0:
-        calculated = speed * 3.6
-    else:
-        time_a = getattr(previous, "timestamp", None)
-        time_b = getattr(current, "timestamp", None)
+        return speed * 3.6
 
-        if time_a is not None and time_b is not None:
-            try:
-                seconds = (time_b - time_a).total_seconds()
-                if seconds > 0:
-                    distance = haversine_distance(previous, current)
-                    if distance > 0:
-                        calculated = (distance / seconds) * 3.6
-            except Exception as error:
-                if DEBUG_SPEED:
-                    print("Speed calculation error:", error)
+    time_a = getattr(previous, "timestamp", None)
+    time_b = getattr(current, "timestamp", None)
 
-    if DEBUG_SPEED:
-        print(
-            "SPEED DEBUG |",
-            "raw=", speed,
-            "time=", getattr(current, "timestamp", None),
-            "calculated_kmh=", calculated
-        )
+    if time_a is None or time_b is None:
+        return None
 
-    return calculated
+    try:
+        seconds = (time_b - time_a).total_seconds()
+        if seconds <= 0:
+            return None
+
+        distance = haversine_distance(previous, current)
+        if distance <= 0:
+            return None
+
+        return (distance / seconds) * 3.6
+    except Exception:
+        return None
 
 
 def calculate_speed_range(track):
     values = []
-
-    print("=== SPEED RANGE DEBUG ===")
-    print("Track points:", len(track.points))
 
     for i in range(1, len(track.points)):
         speed = calculate_point_speed(track.points[i - 1], track.points[i])
         if speed is not None:
             values.append(speed)
 
-    print("Valid speed values:", len(values))
-
     if not values:
-        print("No speed values found")
-        return 0.0, 0.0
+        return None, None
 
-    minimum = min(values)
-    maximum = max(values)
-
-    print("Speed min km/h:", minimum)
-    print("Speed max km/h:", maximum)
-    print("First values:", values[:10])
-
-    return minimum, maximum
+    return min(values), max(values)
 
 
 def calculate_slope_range(track):
@@ -88,6 +67,6 @@ def calculate_slope_range(track):
             values.append(((current_alt - previous_alt) / distance) * 100)
 
     if not values:
-        return 0.0, 0.0
+        return None, None
 
     return min(values), max(values)
