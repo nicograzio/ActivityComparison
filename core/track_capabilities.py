@@ -50,7 +50,20 @@ class TrackCapabilities:
 
     @staticmethod
     def _has_speed(track):
-        return any(p.speed is not None for p in track.points)
+        # La velocità può essere già presente nel file (FIT/GPX con extension speed)
+        # oppure può essere calcolata dalla sequenza GPS quando sono disponibili timestamp.
+        has_recorded_speed = any(p.speed is not None for p in track.points)
+
+        if has_recorded_speed:
+            return True
+
+        return (
+            any(p.timestamp is not None for p in track.points)
+            and all(
+                p.latitude is not None and p.longitude is not None
+                for p in track.points
+            )
+        )
 
     @staticmethod
     def _has_heart_rate(track):
