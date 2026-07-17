@@ -3,8 +3,8 @@ import os
 import requests
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPen, QPixmap
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsLineItem, QGraphicsPixmapItem
+from PyQt6.QtGui import QPen, QPixmap, QPainterPath
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsPixmapItem
 
 from core.colorizer import value_to_color
 from core.analyzer import calculate_point_speed
@@ -20,11 +20,13 @@ class MapWidget(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setRenderHint(self.viewport().paintEngine().Antialiasing if self.viewport().paintEngine() else 0)
         self.zoom_factor = 1.15
         self.zoom_level = 15
         self.track_items = []
         self.tile_items = []
         self.cache_dir = "cache/osm"
+        self.show_points = False
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def wheelEvent(self, event):
@@ -93,7 +95,6 @@ class MapWidget(QGraphicsView):
     def draw_track(self, track, color_mode="Nessuna", minimum=None, maximum=None):
         old_transform = self.transform()
         old_center = self.mapToScene(self.viewport().rect().center())
-
         self.clear_track()
         if len(track.points) < 2:
             return
@@ -107,27 +108,33 @@ class MapWidget(QGraphicsView):
         center_lat = (min_lat + max_lat) / 2
         center_lon = (min_lon + max_lon) / 2
         self.load_map_area(center_lat, center_lon)
-
         ox, oy = self.geo_to_pixel(center_lat, center_lon, self.zoom_level)
 
-        for i in range(1, len(track.points)):
-            a = track.points[i - 1]
-            b = track.points[i]
-            x1, y1 = self.geo_to_pixel(a.latitude, a.longitude, self.zoom_level)
-            x2, y2 = self.geo_to_pixel(b.latitude, b.longitude, self.zoom_level)
+        path = QPainterPath()
+        first = True
+        for i, point in enumerate(track.points):
+            x, y = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
+            x -= ox
+            y -= oy
+            if first:
+                path.moveTo(x, y)
+                first = False
+            else:
+                path.lineTo(x, y)
 
-            color = Qt.GlobalColor.blue
-            value = self.get_segment_value(a, b, color_mode)
-            if value is not None and minimum is not None and maximum is not None:
-                color = value_to_color(value, minimum, maximum)
+            if self.show_points:
+                circle = QGraphicsEllipseItem(x - 2, y - 2, 4, 4)
+                circle.setBrush(Qt.GlobalColor.blue)
+                circle.setPen(QPen(Qt.GlobalColor.blue))
+                circle.setZValue(11)
+                self.scene.addItem(circle)
+                self.track_items.append(circle)
 
-            item = QGraphicsLineItem(x1 - ox, y1 - oy, x2 - ox, y2 - oy)
-            item.setPen(QPen(color, 4))
-            item.setZValue(10)
-            self.scene.addItem(item)
-            self.track_items.append(item)
+        item = QGraphicsPathItem(path)
+        item.setPen(QPen(Qt.GlobalColor.blue, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        item.setZValue(10)
+        self.scene.addItem(item)
+        self.track_items.append(item)
 
-        if not self.track_items:
-            return
         self.setTransform(old_transform)
         self.centerOn(old_center)
