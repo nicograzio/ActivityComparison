@@ -3,7 +3,7 @@ import os
 import requests
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPen, QPixmap, QPainterPath
+from PyQt6.QtGui import QPen, QPixmap, QPainterPath, QPainter
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsPixmapItem
 
 from core.colorizer import value_to_color
@@ -20,7 +20,8 @@ class MapWidget(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setRenderHint(self.viewport().paintEngine().Antialiasing if self.viewport().paintEngine() else 0)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         self.zoom_factor = 1.15
         self.zoom_level = 15
         self.track_items = []
