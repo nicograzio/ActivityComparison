@@ -2,16 +2,22 @@
 
 maplibregl.prewarm();
 
+const DEFAULT_CENTER = [10.73333, 44.58333];
+const DEFAULT_ZOOM = 14.5;
+const DEFAULT_BOUNDS_PADDING = 60;
+
 const map = new maplibregl.Map({
   container: 'map',
-  style: 'https://tiles.openfreemap.org/styles/liberty',
-  center: [10.0, 44.5],
-  zoom: 7,
+  // Use a true vector style so zoom stays crisp instead of raster-like.
+  style: 'https://demotiles.maplibre.org/style.json',
+  center: DEFAULT_CENTER,
+  zoom: DEFAULT_ZOOM,
   pitch: 0,
   bearing: 0,
   attributionControl: true,
   antialias: true,
-  maxZoom: 20
+  maxZoom: 22,
+  minZoom: 2
 });
 
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -25,9 +31,20 @@ function removeIfExists(id, kind) {
   }
 }
 
+function resetView() {
+  if (!map || map.isMoving()) return;
+  map.easeTo({
+    center: DEFAULT_CENTER,
+    zoom: DEFAULT_ZOOM,
+    duration: 0,
+    essential: true
+  });
+}
+
 function clearTrack() {
-  ['track-casing-layer','track-line-layer','track-points-layer'].forEach(id => removeIfExists(id, 'layer'));
-  ['track-casing','track-line','track-points'].forEach(id => removeIfExists(id, 'source'));
+  ['track-casing-layer', 'track-line-layer', 'track-points-layer'].forEach(id => removeIfExists(id, 'layer'));
+  ['track-casing', 'track-line', 'track-points'].forEach(id => removeIfExists(id, 'source'));
+  resetView();
 }
 
 function setTrack(payload) {
@@ -40,7 +57,7 @@ function setTrack(payload) {
     lineMetrics: true
   });
 
-  // Outer halo improves readability over detailed vector maps
+  // Outer halo improves readability over detailed vector maps.
   map.addLayer({
     id: 'track-casing-layer',
     type: 'line',
@@ -96,7 +113,7 @@ function setTrack(payload) {
 
   if (payload.bounds && payload.bounds.length === 2) {
     map.fitBounds(payload.bounds, {
-      padding: 60,
+      padding: DEFAULT_BOUNDS_PADDING,
       duration: 0,
       maxZoom: 18
     });
@@ -105,6 +122,7 @@ function setTrack(payload) {
 
 window.appMap = {
   clearTrack,
+  resetView,
   setTrack
 };
 
