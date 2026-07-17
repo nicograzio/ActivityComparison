@@ -1,34 +1,44 @@
 """
 Vector map renderer foundation.
 
-This module is the starting point for replacing raster OSM tiles with a
-vector based renderer. The existing MapWidget remains untouched until the
-new renderer is fully integrated.
+Initial container for migrating the application from raster OSM tiles to a
+vector map renderer based on MapLibre.
 """
 
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene
-from PyQt6.QtGui import QPainter
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 
-class VectorMapWidget(QGraphicsView):
-    """Base class for the future vector map implementation."""
+class VectorMapWidget(QWebEngineView):
+    """Base MapLibre container.
 
-    def __init__(self):
-        super().__init__()
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        self.track_layer = []
+    The legacy raster MapWidget remains active until the vector renderer is
+    fully integrated. Track layers will be migrated using GeoJSON sources.
+    """
 
-    def clear_map(self):
-        self.scene.clear()
-        self.track_layer.clear()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHtml(self._base_html())
 
-    def draw_track(self, track):
-        """Placeholder for vector track rendering.
-
-        The existing renderer is intentionally kept active until vector tile
-        support is completed.
+    def _base_html(self):
+        return """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset='utf-8'>
+            <style>
+                html, body, #map {
+                    margin: 0;
+                    width: 100%;
+                    height: 100%;
+                    overflow: hidden;
+                }
+            </style>
+        </head>
+        <body>
+            <div id='map'></div>
+            <script>
+                // MapLibre initialization will be added in the next commit.
+            </script>
+        </body>
+        </html>
         """
-        pass
