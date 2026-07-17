@@ -111,31 +111,27 @@ class MapWidget(QGraphicsView):
         self.load_map_area(center_lat, center_lon)
         ox, oy = self.geo_to_pixel(center_lat, center_lon, self.zoom_level)
 
-        path = QPainterPath()
-        first = True
-        for i, point in enumerate(track.points):
-            x, y = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
-            x -= ox
-            y -= oy
-            if first:
-                path.moveTo(x, y)
-                first = False
-            else:
-                path.lineTo(x, y)
+        for i in range(1, len(track.points)):
+            previous = track.points[i - 1]
+            point = track.points[i]
+            x1, y1 = self.geo_to_pixel(previous.latitude, previous.longitude, self.zoom_level)
+            x2, y2 = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
 
-            if self.show_points:
-                circle = QGraphicsEllipseItem(x - 2, y - 2, 4, 4)
-                circle.setBrush(Qt.GlobalColor.blue)
-                circle.setPen(QPen(Qt.GlobalColor.blue))
-                circle.setZValue(11)
-                self.scene.addItem(circle)
-                self.track_items.append(circle)
+            path = QPainterPath()
+            path.moveTo(x1 - ox, y1 - oy)
+            path.lineTo(x2 - ox, y2 - oy)
 
-        item = QGraphicsPathItem(path)
-        item.setPen(QPen(Qt.GlobalColor.blue, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        item.setZValue(10)
-        self.scene.addItem(item)
-        self.track_items.append(item)
+            color = Qt.GlobalColor.blue
+            if color_mode == "Velocità":
+                value = self.get_segment_value(previous, point, color_mode)
+                if value is not None:
+                    color = value_to_color(value, minimum, maximum)
+
+            item = QGraphicsPathItem(path)
+            item.setPen(QPen(color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            item.setZValue(10)
+            self.scene.addItem(item)
+            self.track_items.append(item)
 
         self.setTransform(old_transform)
         self.centerOn(old_center)
