@@ -27,6 +27,9 @@ class TrackPanel(QWidget):
         self.full_distance_m = 0.0
         self.visible_start_m = 0.0
         self.visible_end_m = 0.0
+        self.scale_mode = "auto"
+        self.manual_scale_min = None
+        self.manual_scale_max = None
 
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
@@ -39,8 +42,12 @@ class TrackPanel(QWidget):
         toolbar.addWidget(QLabel("Colora per:"))
         self.color_mode = QComboBox()
         toolbar.addWidget(self.color_mode)
-        self.min_value = QLineEdit(); self.max_value = QLineEdit()
-        toolbar.addWidget(self.min_value); toolbar.addWidget(self.max_value)
+        self.min_value = QLineEdit()
+        self.max_value = QLineEdit()
+        self.min_value.editingFinished.connect(self._on_scale_limits_edited)
+        self.max_value.editingFinished.connect(self._on_scale_limits_edited)
+        toolbar.addWidget(self.min_value)
+        toolbar.addWidget(self.max_value)
         layout.addLayout(toolbar)
 
         self.info_label = QLabel("")
@@ -62,6 +69,40 @@ class TrackPanel(QWidget):
             return self.color_mode.currentText()
         return "Nessuna"
 
+    @staticmethod
+    def _parse_float(text):
+        text = text.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _manual_scale_limits(self):
+        minimum = self._parse_float(self.min_value.text())
+        maximum = self._parse_float(self.max_value.text())
+        if minimum is None or maximum is None or minimum >= maximum:
+            return None
+        return minimum, maximum
+
+    def _current_scale_limits(self, visible_track):
+        if self.scale_mode == "manual":
+            if self.manual_scale_min is not None and self.manual_scale_max is not None:
+                return self.manual_scale_min, self.manual_scale_max
+            manual_limits = self._manual_scale_limits()
+            if manual_limits is not None:
+                self.manual_scale_min, self.manual_scale_max = manual_limits
+                return manual_limits
+            self.scale_mode = "auto"
+
+        mode = self._current_mode()
+        if mode == "Velocità":
+            return calculate_speed_range(visible_track)
+        if mode == "Pendenza":
+            return calculate_slope_range(visible_track)
+        return None, None
+
     def _render_visible_track(self):
         if not self.track:
             return
@@ -70,14 +111,7 @@ class TrackPanel(QWidget):
         end_m = max(self.visible_start_m, self.visible_end_m)
         visible_track = trim_track_by_distance(self.track, start_m, end_m)
 
-        mode = self._current_mode()
-        if mode == "Velocità":
-            minimum, maximum = calculate_speed_range(visible_track)
-        elif mode == "Pendenza":
-            minimum, maximum = calculate_slope_range(visible_track)
-        else:
-            minimum, maximum = None, None
-
+        minimum, maximum = self._current_scale_limits(visible_track)
         if minimum is not None and maximum is not None:
             self.min_value.setText(f"{minimum:.1f}")
             self.max_value.setText(f"{maximum:.1f}")
@@ -85,7 +119,21 @@ class TrackPanel(QWidget):
             self.min_value.clear()
             self.max_value.clear()
 
-        self.map.draw_track(visible_track, mode, minimum, maximum)
+        self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
+
+    def _on_scale_limits_edited(self):
+        if not self.track:
+            return
+
+        manual_limits = self._manual_scale_limits()
+        if manual_limits is None:
+            self.scale_mode = "auto"
+            self.manual_scale_min = None
+            self.manual_scale_max = None
+        else:
+            self.scale_mode = "manual"
+            self.manual_scale_min, self.manual_scale_max = manual_limits
+        self._render_visible_track()
 
     def update_trim(self, start, end):
         if not self.track:
@@ -133,6 +181,9 @@ class TrackPanel(QWidget):
             self.range_slider.setValues(0, slider_max)
             self.visible_start_m = 0.0
             self.visible_end_m = float(slider_max)
+            self.scale_mode = "auto"
+            self.manual_scale_min = None
+            self.manual_scale_max = None
             self.update_trim(0, slider_max)
         except Exception as error:
             QMessageBox.critical(self, "Errore caricamento", str(error))
