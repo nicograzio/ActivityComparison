@@ -6,6 +6,7 @@ from core.track import Track, TrackPoint
 
 
 logging.getLogger("fitparse").disabled = True
+logging.getLogger("gpxpy").disabled = True
 
 
 def load_fit(path):
