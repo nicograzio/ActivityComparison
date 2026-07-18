@@ -4,7 +4,7 @@ import requests
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPen, QPixmap, QPainterPath, QPainter
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsEllipseItem, QGraphicsPixmapItem
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsPixmapItem
 
 from core.colorizer import value_to_color
 from core.analyzer import calculate_point_speed
@@ -67,8 +67,8 @@ class MapWidget(QGraphicsView):
                 item.setZValue(0)
                 self.scene.addItem(item)
                 self.tile_items.append(item)
-        except Exception as e:
-            print("Tile error:", e)
+        except Exception:
+            pass
 
     def load_map_area(self, lat, lon):
         self.clear_tiles()
@@ -121,7 +121,7 @@ class MapWidget(QGraphicsView):
             path.moveTo(x1 - ox, y1 - oy)
             path.lineTo(x2 - ox, y2 - oy)
 
-            color = Qt.GlobalColor.blue
+            color = Qt.GlobalColor.gray
             if color_mode == "Velocità":
                 value = self.get_segment_value(previous, point, color_mode)
                 if value is not None:
