@@ -57,4 +57,6 @@ function setTrack(payload) {
 
 window.appMap={clearTrack,setTrack};
 
-map.on('error', e => console.log('MapLibre error', e));
+map.on('error', e => {
+  void e;
+});
