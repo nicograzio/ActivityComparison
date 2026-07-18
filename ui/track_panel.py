@@ -82,6 +82,11 @@ class TrackPanel(QWidget):
         visible_track = trim_track_by_distance(self.track, start_m, end_m)
         return calculate_speed_range(visible_track)
 
+    def current_speed_scale_limits(self):
+        if self.manual_scale_min is not None and self.manual_scale_max is not None:
+            return self.manual_scale_min, self.manual_scale_max
+        return self.visible_speed_range()
+
     def set_speed_scale_limits(self, minimum, maximum):
         if minimum is None or maximum is None or minimum >= maximum:
             return
