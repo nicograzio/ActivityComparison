@@ -87,14 +87,16 @@ class TrackPanel(QWidget):
         return minimum, maximum
 
     def _current_scale_limits(self, visible_track):
+        manual_limits = self._manual_scale_limits()
+        if manual_limits is not None:
+            self.scale_mode = "manual"
+            self.manual_scale_min, self.manual_scale_max = manual_limits
+            return manual_limits
+
         if self.scale_mode == "manual":
-            if self.manual_scale_min is not None and self.manual_scale_max is not None:
-                return self.manual_scale_min, self.manual_scale_max
-            manual_limits = self._manual_scale_limits()
-            if manual_limits is not None:
-                self.manual_scale_min, self.manual_scale_max = manual_limits
-                return manual_limits
             self.scale_mode = "auto"
+            self.manual_scale_min = None
+            self.manual_scale_max = None
 
         mode = self._current_mode()
         if mode == "Velocità":
@@ -113,11 +115,19 @@ class TrackPanel(QWidget):
 
         minimum, maximum = self._current_scale_limits(visible_track)
         if minimum is not None and maximum is not None:
+            self.min_value.blockSignals(True)
+            self.max_value.blockSignals(True)
             self.min_value.setText(f"{minimum:.1f}")
             self.max_value.setText(f"{maximum:.1f}")
+            self.min_value.blockSignals(False)
+            self.max_value.blockSignals(False)
         else:
+            self.min_value.blockSignals(True)
+            self.max_value.blockSignals(True)
             self.min_value.clear()
             self.max_value.clear()
+            self.min_value.blockSignals(False)
+            self.max_value.blockSignals(False)
 
         self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
 
