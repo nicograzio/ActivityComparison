@@ -84,5 +84,3 @@ function setViewState(state) {
 }
 
 window.appMap={clearTrack,setTrack,getViewState,setViewState};
-
-map.on('error', e => console.log('MapLibre error', e));
