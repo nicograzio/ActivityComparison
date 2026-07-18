@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QBrush
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
 
 
 class RangeSlider(QWidget):
@@ -32,10 +32,7 @@ class RangeSlider(QWidget):
 
     def mousePressEvent(self, event):
         x = event.position().x()
-        if abs(x-self._pos(self.lower)) < abs(x-self._pos(self.upper)):
-            self.dragging = 'lower'
-        else:
-            self.dragging = 'upper'
+        self.dragging = 'lower' if abs(x-self._pos(self.lower)) < abs(x-self._pos(self.upper)) else 'upper'
 
     def mouseMoveEvent(self, event):
         if not self.dragging:
@@ -54,11 +51,12 @@ class RangeSlider(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         y = self.height()//2
-        p.setPen(QPen(Qt.GlobalColor.gray, 4))
-        p.drawLine(10, y, self.width()-10, y)
-        p.setPen(QPen(Qt.GlobalColor.blue, 6))
+        gray = QColor(130, 130, 130)
+        p.setPen(QPen(gray, 6))
         p.drawLine(self._pos(self.lower), y, self._pos(self.upper), y)
+        p.setPen(QPen(Qt.GlobalColor.darkGray, 4))
+        p.drawLine(10, y, self.width()-10, y)
         p.setBrush(QBrush(Qt.GlobalColor.white))
-        p.setPen(QPen(Qt.GlobalColor.blue, 2))
+        p.setPen(QPen(gray, 2))
         p.drawEllipse(self._pos(self.lower)-7, y-7, 14, 14)
         p.drawEllipse(self._pos(self.upper)-7, y-7, 14, 14)
