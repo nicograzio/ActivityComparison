@@ -67,7 +67,7 @@ class VectorMapWidget(QWidget):
         try:
             return color.name()
         except Exception:
-            return "#ffff00"
+            return "#808080"
 
     @staticmethod
     def _segment_slope(previous: Any, current: Any):
@@ -108,7 +108,7 @@ class VectorMapWidget(QWidget):
             longitudes.extend([previous.longitude, current.longitude])
 
             value = self._segment_value(previous, current, color_mode)
-            color = "#1e66f5"
+            color = "#808080"
             if color_mode in ("Velocità", "Pendenza") and value is not None:
                 color = self._qcolor_to_hex(value_to_color(value, minimum or 0, maximum or 0))
 
