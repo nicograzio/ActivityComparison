@@ -2,7 +2,7 @@ import math
 import os
 import requests
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPen, QPixmap, QPainterPath, QPainter
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsPixmapItem
 
@@ -12,6 +12,7 @@ from core.analyzer import calculate_point_speed
 
 class MapWidget(QGraphicsView):
     TILE_SIZE = 256
+    viewChanged = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
@@ -30,9 +31,45 @@ class MapWidget(QGraphicsView):
         self.show_points = False
         os.makedirs(self.cache_dir, exist_ok=True)
 
+    def _emit_view_changed(self):
+        self.viewChanged.emit(self.get_view_state())
+
+    def get_view_state(self):
+        center = self.mapToScene(self.viewport().rect().center())
+        transform = self.transform()
+        return {
+            "center": [round(center.x(), 3), round(center.y(), 3)],
+            "scale": round(transform.m11(), 4),
+            "zoom": self.zoom_level,
+        }
+
+    def set_view_state(self, state):
+        if not isinstance(state, dict):
+            return
+        center = state.get("center")
+        scale = state.get("scale")
+        if not isinstance(center, (list, tuple)) or len(center) != 2:
+            return
+        try:
+            cx = float(center[0])
+            cy = float(center[1])
+            scale = float(scale) if scale is not None else self.transform().m11()
+        except Exception:
+            return
+
+        self.resetTransform()
+        self.scale(scale, scale)
+        self.centerOn(cx, cy)
+        self._emit_view_changed()
+
     def wheelEvent(self, event):
         factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
         self.scale(factor, factor)
+        self._emit_view_changed()
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._emit_view_changed()
 
     def geo_to_pixel(self, lat, lon, zoom):
         size = self.TILE_SIZE * (2 ** zoom)
@@ -135,3 +172,4 @@ class MapWidget(QGraphicsView):
 
         self.setTransform(old_transform)
         self.centerOn(old_center)
+        self._emit_view_changed()
