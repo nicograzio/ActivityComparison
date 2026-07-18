@@ -55,6 +55,34 @@ function setTrack(payload) {
   }
 }
 
-window.appMap={clearTrack,setTrack};
+function getViewState() {
+  const center = map.getCenter();
+  return {
+    center: [center.lng, center.lat],
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+  };
+}
+
+function setViewState(state) {
+  if (!state) return;
+  const options = {duration:0};
+  if (Array.isArray(state.center) && state.center.length === 2) {
+    options.center = state.center;
+  }
+  if (typeof state.zoom === 'number') {
+    options.zoom = state.zoom;
+  }
+  if (typeof state.bearing === 'number') {
+    options.bearing = state.bearing;
+  }
+  if (typeof state.pitch === 'number') {
+    options.pitch = state.pitch;
+  }
+  map.jumpTo(options);
+}
+
+window.appMap={clearTrack,setTrack,getViewState,setViewState};
 
 map.on('error', e => console.log('MapLibre error', e));
