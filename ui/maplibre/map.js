@@ -61,7 +61,7 @@ function getViewState() {
     center: [center.lng, center.lat],
     zoom: map.getZoom(),
     bearing: map.getBearing(),
-    pitch: map.getPitch(),
+    pitch: map.getPitch()
   };
 }
 
