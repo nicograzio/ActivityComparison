@@ -5,6 +5,9 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy
 class ComparisonControlsPanel(QWidget):
     sync_maps_toggled = pyqtSignal(bool)
     sync_speed_scale_requested = pyqtSignal()
+    invert_activities_requested = pyqtSignal()
+    center_traces_requested = pyqtSignal()
+    toggle_graphs_requested = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -33,6 +36,33 @@ class ComparisonControlsPanel(QWidget):
         )
         self.sync_speed_button.clicked.connect(self.sync_speed_scale_requested.emit)
         layout.addWidget(self.sync_speed_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.invert_button = self._build_button(
+            "🔄",
+            "Inverti attività A/B",
+            "Scambia le due attività tra i pannelli",
+            checkable=False,
+        )
+        self.invert_button.clicked.connect(self.invert_activities_requested.emit)
+        layout.addWidget(self.invert_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.center_button = self._build_button(
+            "📍",
+            "Centra entrambe sulle tracce",
+            "Porta entrambe le mappe a inquadrare le rispettive tracce",
+            checkable=False,
+        )
+        self.center_button.clicked.connect(self.center_traces_requested.emit)
+        layout.addWidget(self.center_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.graphs_button = self._build_button(
+            "📊",
+            "Mostra / Nascondi grafici",
+            "Mostra o nasconde il pannello dei grafici sotto le mappe",
+            checkable=True,
+        )
+        self.graphs_button.toggled.connect(self.toggle_graphs_requested.emit)
+        layout.addWidget(self.graphs_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         layout.addStretch(1)
 
