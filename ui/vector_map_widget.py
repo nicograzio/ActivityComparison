@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 try:
@@ -23,11 +23,19 @@ if QWebEngineView is None:
 
 
 class VectorMapWidget(QWidget):
+    viewChanged = pyqtSignal(dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.show_points = False
         self._ready = False
         self._pending_payload: dict[str, Any] | None = None
+        self._last_view_state: dict[str, Any] = {
+            "center": [10.73333, 44.58333],
+            "zoom": 14,
+            "bearing": 0,
+            "pitch": 0,
+        }
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -36,7 +44,7 @@ class VectorMapWidget(QWidget):
         self.view.setZoomFactor(1.0)
         self.view.settings().setAttribute(
             self.view.settings().WebAttribute.ShowScrollBars,
-            False
+            False,
         )
         layout.addWidget(self.view)
 
@@ -44,14 +52,82 @@ class VectorMapWidget(QWidget):
         self.view.setUrl(QUrl.fromLocalFile(str(index_path)))
         self.view.loadFinished.connect(self._on_load_finished)
 
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(150)
+        self._poll_timer.timeout.connect(self._poll_view_state)
+        self._poll_timer.start()
+
     def _on_load_finished(self, ok: bool):
         self._ready = bool(ok)
         if self._ready and self._pending_payload is not None:
             self._push_track_payload(self._pending_payload)
             self._pending_payload = None
 
-    def _run_js(self, script: str):
-        self.view.page().runJavaScript(script)
+    def _run_js(self, script: str, callback=None):
+        if callback is None:
+            self.view.page().runJavaScript(script)
+            return
+        self.view.page().runJavaScript(script, callback)
+
+    @staticmethod
+    def _normalize_view_state(state: Any) -> dict[str, Any]:
+        default = {
+            "center": [10.73333, 44.58333],
+            "zoom": 14,
+            "bearing": 0,
+            "pitch": 0,
+        }
+        if not isinstance(state, dict):
+            return default
+
+        center = state.get("center", default["center"])
+        if isinstance(center, (list, tuple)) and len(center) == 2:
+            try:
+                center = [round(float(center[0]), 6), round(float(center[1]), 6)]
+            except Exception:
+                center = default["center"]
+        else:
+            center = default["center"]
+
+        def _safe_float(key: str, fallback: float) -> float:
+            try:
+                return round(float(state.get(key, fallback)), 4)
+            except Exception:
+                return fallback
+
+        return {
+            "center": center,
+            "zoom": _safe_float("zoom", default["zoom"]),
+            "bearing": _safe_float("bearing", default["bearing"]),
+            "pitch": _safe_float("pitch", default["pitch"]),
+        }
+
+    def _poll_view_state(self):
+        if not self._ready:
+            return
+
+        self._run_js(
+            "window.appMap && window.appMap.getViewState ? window.appMap.getViewState() : null;",
+            self._handle_view_state,
+        )
+
+    def _handle_view_state(self, state: Any):
+        normalized = self._normalize_view_state(state)
+        if normalized != self._last_view_state:
+            self._last_view_state = normalized
+            self.viewChanged.emit(normalized)
+
+    def get_view_state(self) -> dict[str, Any]:
+        return dict(self._last_view_state)
+
+    def set_view_state(self, state: Any):
+        normalized = self._normalize_view_state(state)
+        self._last_view_state = normalized
+        if not self._ready:
+            return
+        self._run_js(
+            f"window.appMap && window.appMap.setViewState({json.dumps(normalized, ensure_ascii=False)});"
+        )
 
     def _push_track_payload(self, payload: dict[str, Any]):
         self._run_js(f"window.appMap && window.appMap.setTrack({json.dumps(payload, ensure_ascii=False)});")
