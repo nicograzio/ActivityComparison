@@ -69,6 +69,32 @@ class TrackPanel(QWidget):
             return self.color_mode.currentText()
         return "Nessuna"
 
+    def set_color_mode(self, mode: str):
+        index = self.color_mode.findText(mode)
+        if index >= 0 and self.color_mode.currentIndex() != index:
+            self.color_mode.setCurrentIndex(index)
+
+    def visible_speed_range(self):
+        if not self.track:
+            return None, None
+        start_m = min(self.visible_start_m, self.visible_end_m)
+        end_m = max(self.visible_start_m, self.visible_end_m)
+        visible_track = trim_track_by_distance(self.track, start_m, end_m)
+        return calculate_speed_range(visible_track)
+
+    def set_speed_scale_limits(self, minimum, maximum):
+        if minimum is None or maximum is None or minimum >= maximum:
+            return
+        self.scale_mode = "manual"
+        self.manual_scale_min = float(minimum)
+        self.manual_scale_max = float(maximum)
+        self.min_value.setText(f"{minimum:.1f}")
+        self.max_value.setText(f"{maximum:.1f}")
+        self._render_visible_track()
+
+    def refresh_visible_track(self):
+        self._render_visible_track()
+
     @staticmethod
     def _parse_float(text):
         text = text.strip().replace(",", ".")
