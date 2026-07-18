@@ -1,11 +1,6 @@
-import logging
-
 from fitparse import FitFile
 
 from core.track import Track, TrackPoint
-
-
-logging.getLogger("fitparse").disabled = True
 
 
 def load_fit(path):
