@@ -44,8 +44,8 @@ class TrackPanel(QWidget):
         toolbar.addWidget(self.color_mode)
         self.min_value = QLineEdit()
         self.max_value = QLineEdit()
-        self.min_value.textEdited.connect(self._on_scale_limits_edited)
-        self.max_value.textEdited.connect(self._on_scale_limits_edited)
+        self.min_value.editingFinished.connect(self._on_scale_limits_edited)
+        self.max_value.editingFinished.connect(self._on_scale_limits_edited)
         toolbar.addWidget(self.min_value)
         toolbar.addWidget(self.max_value)
         layout.addLayout(toolbar)
@@ -131,7 +131,7 @@ class TrackPanel(QWidget):
 
         self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
 
-    def _on_scale_limits_edited(self, *_):
+    def _on_scale_limits_edited(self):
         if not self.track:
             return
 
