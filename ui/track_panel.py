@@ -129,6 +129,10 @@ class TrackPanel(QWidget):
     def update_scale(self, *_):
         self._render_visible_track()
 
+   def show_summary(self):
+        summary = self.capabilities.summary()
+        self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
+
     def import_file(self):
         filename, _ = QFileDialog.getOpenFileName(self, "Seleziona attività", "", "Attività GPS (*.fit *.gpx)")
         if not filename:
