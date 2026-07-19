@@ -14,10 +14,8 @@ class GraphPanel(QWidget):
 
     def __init__(self):
         super().__init__()
-
         self._time = []
         self._values = []
-
         self.setMinimumHeight(220)
 
         layout = QVBoxLayout(self)
@@ -42,7 +40,7 @@ class GraphPanel(QWidget):
         self._time = list(time_values)
         self._values = list(data_values)
 
-        if not self.axis:
+        if not self.axis or not self._time:
             return
 
         self.axis.clear()
@@ -50,13 +48,11 @@ class GraphPanel(QWidget):
         self.axis.set_xlabel("Tempo")
         self.axis.set_ylabel(label)
         self.figure.tight_layout()
-        self.canvas.draw()
-        self.canvas.show()
+        self.canvas.draw_idle()
 
     def clear_graph(self):
         self._time.clear()
         self._values.clear()
-
         if self.axis:
             self.axis.clear()
-            self.canvas.draw()
+            self.canvas.draw_idle()
