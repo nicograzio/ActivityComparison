@@ -33,13 +33,13 @@ class MainWindow(QMainWindow):
         maps_layout.addWidget(self.controls_panel, 0)
         maps_layout.addWidget(self.right_panel, 1)
 
-        splitter = QSplitter()
-        splitter.setOrientation(__import__('PyQt6.QtCore', fromlist=['Qt']).Qt.Orientation.Vertical)
-        splitter.addWidget(maps_container)
-        splitter.addWidget(self.graph_panel)
-        splitter.setSizes([700, 250])
+        self.vertical_splitter = QSplitter()
+        self.vertical_splitter.setOrientation(__import__('PyQt6.QtCore', fromlist=['Qt']).Qt.Orientation.Vertical)
+        self.vertical_splitter.addWidget(maps_container)
+        self.vertical_splitter.addWidget(self.graph_panel)
+        self.vertical_splitter.setSizes([650, 300])
 
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self.vertical_splitter)
         central.setLayout(main_layout)
         self.setCentralWidget(central)
 
@@ -51,16 +51,12 @@ class MainWindow(QMainWindow):
         if not points:
             return
 
-        times = [
-            getattr(point, "timestamp", index)
-            for index, point in enumerate(points)
-        ]
-        speeds = [
-            getattr(point, "speed", 0) or 0
-            for point in points
-        ]
+        times = [getattr(point, "timestamp", index) for index, point in enumerate(points)]
+        speeds = [getattr(point, "speed", 0) or 0 for point in points]
 
+        self.graph_panel.setVisible(True)
         self.graph_panel.set_series(times, speeds, "Velocità")
+        self.vertical_splitter.setSizes([650, 300])
 
     def _on_sync_maps_toggled(self, enabled):
         pass
