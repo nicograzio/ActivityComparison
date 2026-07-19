@@ -138,6 +138,7 @@ class TrackPanel(QWidget):
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.capabilities = TrackCapabilities(self.track)
             self.file_label.setText(Path(filename).name)
+            self.show_summary()
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
             self.color_mode.setCurrentText("Velocità" if "Velocità" in self.capabilities.available_modes else self.capabilities.available_modes[0])
