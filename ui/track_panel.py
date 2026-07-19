@@ -132,6 +132,10 @@ class TrackPanel(QWidget):
     def update_trim(self, start, end):
         if not self.track:
             return
+        start_km = self.visible_start_m / 1000
+        end_km = self.visible_end_m / 1000
+        total_km = self.full_distance_m / 1000
+        self.range_label.setText(f"Visualizzazione: {start_km:.2f} km → {end_km:.2f} km / {total_km:.2f} km")
         self.visible_start_m = float(min(start, end))
         self.visible_end_m = float(max(start, end))
         self._render_visible_track()
@@ -140,7 +144,7 @@ class TrackPanel(QWidget):
         self._render_visible_track()
 
     def show_summary(self):
-        summary = self.capabilities.summary()
+        summary = self.capabilities.summary
         self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
 
     def import_file(self):
@@ -152,15 +156,18 @@ class TrackPanel(QWidget):
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.capabilities = TrackCapabilities(self.track)
             self.file_label.setText(Path(filename).name)
+            self.show_summary()
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
             self.color_mode.setCurrentText("Velocità" if "Velocità" in self.capabilities.available_modes else self.capabilities.available_modes[0])
             _, self.full_distance_m = track_distance_profile(self.track)
+            slider_max = max(1, int(round(self.full_distance_m)))
             self.range_slider.setEnabled(True)
-            self.range_slider.setRange(0, max(1, int(round(self.full_distance_m))))
-            self.range_slider.setValues(0, max(1, int(round(self.full_distance_m))))
+            self.range_slider.setRange(0, slider_max)
+            self.range_slider.setValues(0, slider_max)
             self.visible_start_m = 0
             self.visible_end_m = self.full_distance_m
+            self.update_trim(0, slider_max)
             self._render_visible_track()
             self.activity_loaded.emit(self.track)
         except Exception as error:
