@@ -1,4 +1,5 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtCore import QSize
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -9,13 +10,7 @@ except ImportError:
 
 
 class GraphPanel(QWidget):
-    """Base activity graph widget.
-
-    First implementation:
-    - time axis support
-    - single selectable data series
-    - ready for future cursor and multi-series extensions
-    """
+    """Activity chart container."""
 
     def __init__(self):
         super().__init__()
@@ -23,11 +18,14 @@ class GraphPanel(QWidget):
         self._time = []
         self._values = []
 
+        self.setMinimumHeight(220)
+
         layout = QVBoxLayout(self)
 
         if FigureCanvasQTAgg and Figure:
-            self.figure = Figure(figsize=(5, 2))
+            self.figure = Figure(figsize=(8, 3), tight_layout=True)
             self.canvas = FigureCanvasQTAgg(self.figure)
+            self.canvas.setMinimumSize(QSize(400, 180))
             self.axis = self.figure.add_subplot(111)
             self.axis.set_xlabel("Tempo")
             self.axis.set_ylabel("Valore")
@@ -36,6 +34,7 @@ class GraphPanel(QWidget):
             self.figure = None
             self.canvas = None
             self.axis = None
+            layout.addWidget(QLabel("Modulo grafici non disponibile"))
 
         self.setLayout(layout)
 
@@ -51,7 +50,8 @@ class GraphPanel(QWidget):
         self.axis.set_xlabel("Tempo")
         self.axis.set_ylabel(label)
         self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self.canvas.draw()
+        self.canvas.show()
 
     def clear_graph(self):
         self._time.clear()
@@ -59,4 +59,4 @@ class GraphPanel(QWidget):
 
         if self.axis:
             self.axis.clear()
-            self.canvas.draw_idle()
+            self.canvas.draw()
