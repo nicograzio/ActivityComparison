@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel
@@ -46,9 +46,20 @@ class MainWindow(QMainWindow):
     def _update_graph(self, panel):
         if not panel.track:
             return
-        points = panel.track
-        times = [getattr(point, "time", index) for index, point in enumerate(points)]
-        speeds = [getattr(point, "speed", 0) for point in points]
+
+        points = panel.track.points
+        if not points:
+            return
+
+        times = [
+            getattr(point, "timestamp", index)
+            for index, point in enumerate(points)
+        ]
+        speeds = [
+            getattr(point, "speed", 0) or 0
+            for point in points
+        ]
+
         self.graph_panel.set_series(times, speeds, "Velocità")
 
     def _on_sync_maps_toggled(self, enabled):
