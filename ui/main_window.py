@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel
@@ -26,14 +26,14 @@ class MainWindow(QMainWindow):
         self.right_panel.visible_track_changed.connect(lambda track: self._update_graph(self.right_graph, track))
 
         left_container = QWidget()
-        left_layout = QHBoxLayout(left_container)
-        left_layout.addWidget(self.left_panel, 1)
-        left_layout.addWidget(self.left_graph, 1)
+        left_layout = QVBoxLayout(left_container)
+        left_layout.addWidget(self.left_panel, 3)
+        left_layout.addWidget(self.left_graph, 2)
 
         right_container = QWidget()
-        right_layout = QHBoxLayout(right_container)
-        right_layout.addWidget(self.right_panel, 1)
-        right_layout.addWidget(self.right_graph, 1)
+        right_layout = QVBoxLayout(right_container)
+        right_layout.addWidget(self.right_panel, 3)
+        right_layout.addWidget(self.right_graph, 2)
 
         self.controls_panel.sync_maps_toggled.connect(self._on_sync_maps_toggled)
         self.controls_panel.sync_speed_scale_requested.connect(self._sync_speed_scales)
@@ -67,27 +67,13 @@ class MainWindow(QMainWindow):
         speeds = []
 
         for index, point in enumerate(points):
-            timestamp = getattr(point, "timestamp", None)
+            times.append(float(index))
             if index == 0:
-                times.append(0.0)
                 speeds.append(0.0)
                 continue
 
-            prev_timestamp = getattr(points[index - 1], "timestamp", None)
-            if timestamp is not None and prev_timestamp is not None:
-                try:
-                    elapsed = (timestamp - points[0].timestamp).total_seconds()
-                except Exception:
-                    elapsed = float(index)
-            else:
-                elapsed = float(index)
-
-            times.append(elapsed)
-
             speed = calculate_point_speed(points[index - 1], point)
-            if speed is None:
-                speed = 0.0
-            speeds.append(speed)
+            speeds.append(0.0 if speed is None else speed)
 
         graph.setVisible(True)
         graph.set_series(times, speeds, "Velocità")
