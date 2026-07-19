@@ -73,6 +73,39 @@ class TrackPanel(QWidget):
             return self.color_mode.currentText()
         return "Nessuna"
 
+    def _parse_float(self, text):
+        text = text.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    
+    def _manual_scale_limits(self):
+        minimum = self._parse_float(self.min_value.text())
+        maximum = self._parse_float(self.max_value.text())
+        if minimum is None or maximum is None or minimum >= maximum:
+            return None
+        return minimum, maximum
+
+    def _current_scale_limits(self, visible_track):
+        if self.scale_mode == "manual":
+            if self.manual_scale_min is not None and self.manual_scale_max is not None:
+                return self.manual_scale_min, self.manual_scale_max
+            manual_limits = self._manual_scale_limits()
+            if manual_limits is not None:
+                self.manual_scale_min, self.manual_scale_max = manual_limits
+                return manual_limits
+            self.scale_mode = "auto"
+
+        mode = self._current_mode()
+        if mode == "Velocità":
+            return calculate_speed_range(visible_track)
+        if mode == "Pendenza":
+            return calculate_slope_range(visible_track)
+        return None, None
+
     def set_color_mode(self, mode: str):
         index = self.color_mode.findText(mode)
         if index >= 0 and self.color_mode.currentIndex() != index:
@@ -91,7 +124,9 @@ class TrackPanel(QWidget):
             return None, None
         return calculate_speed_range(visible_track)
 
-    def current_speed_scale_limits(self):
+    def current_scale_limits(self):
+        if self.manual_scale_min is not None and self.manual_scale_max is not None:
+            return self.manual_scale_min, self.manual_scale_max
         return self.visible_speed_range()
 
     def set_speed_scale_limits(self, minimum, maximum):
@@ -114,19 +149,24 @@ class TrackPanel(QWidget):
         if not visible_track:
             return
         minimum, maximum = self._current_scale_limits(visible_track)
+        if minimum is not None and maximum is not None:
+            self.min_value.setText(f"{minimum:.1f}")
+            self.max_value.setText(f"{maximum:.1f}")
+        else:
+            self.min_value.clear()
+            self.max_value.clear()
         self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
         self.visible_track_changed.emit(visible_track)
 
-    def _current_scale_limits(self, visible_track):
-        if self.scale_mode == "manual":
-            return self.manual_scale_min, self.manual_scale_max
-        if self._current_mode() == "Velocità":
-            return calculate_speed_range(visible_track)
-        if self._current_mode() == "Pendenza":
-            return calculate_slope_range(visible_track)
-        return None, None
-
     def _on_scale_limits_edited(self):
+        manual_limits = self._manual_scale_limits()
+        if manual_limits is None:
+            self.scale_mode = "auto"
+            self.manual_scale_min = None
+            self.manual_scale_max = None
+        else:
+            self.scale_mode = "manual"
+            self.manual_scale_min, self.manual_scale_max = manual_limits
         self._render_visible_track()
 
     def update_trim(self, start, end):
