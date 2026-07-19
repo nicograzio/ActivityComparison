@@ -22,6 +22,7 @@ from core.track_capabilities import TrackCapabilities
 
 class TrackPanel(QWidget):
     activity_loaded = pyqtSignal(object)
+    visible_track_changed = pyqtSignal(object)
 
     def __init__(self, title):
         super().__init__()
@@ -77,10 +78,18 @@ class TrackPanel(QWidget):
         if index >= 0 and self.color_mode.currentIndex() != index:
             self.color_mode.setCurrentIndex(index)
 
-    def visible_speed_range(self):
+    def _visible_track(self):
         if not self.track:
+            return None
+        start_m = min(self.visible_start_m, self.visible_end_m)
+        end_m = max(self.visible_start_m, self.visible_end_m)
+        return trim_track_by_distance(self.track, start_m, end_m)
+
+    def visible_speed_range(self):
+        visible_track = self._visible_track()
+        if not visible_track:
             return None, None
-        return calculate_speed_range(self.track)
+        return calculate_speed_range(visible_track)
 
     def current_speed_scale_limits(self):
         return self.visible_speed_range()
@@ -101,11 +110,12 @@ class TrackPanel(QWidget):
     def _render_visible_track(self):
         if not self.track:
             return
-        start_m = min(self.visible_start_m, self.visible_end_m)
-        end_m = max(self.visible_start_m, self.visible_end_m)
-        visible_track = trim_track_by_distance(self.track, start_m, end_m)
+        visible_track = self._visible_track()
+        if not visible_track:
+            return
         minimum, maximum = self._current_scale_limits(visible_track)
         self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
+        self.visible_track_changed.emit(visible_track)
 
     def _current_scale_limits(self, visible_track):
         if self.scale_mode == "manual":
@@ -142,7 +152,6 @@ class TrackPanel(QWidget):
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.capabilities = TrackCapabilities(self.track)
             self.file_label.setText(Path(filename).name)
-            # self.show_summary()
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
             self.color_mode.setCurrentText("Velocità" if "Velocità" in self.capabilities.available_modes else self.capabilities.available_modes[0])
