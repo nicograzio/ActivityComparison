@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel
@@ -16,10 +16,21 @@ class MainWindow(QMainWindow):
         self.left_panel = TrackPanel("Activity A")
         self.right_panel = TrackPanel("Activity B")
         self.controls_panel = ComparisonControlsPanel()
-        self.graph_panel = GraphPanel()
+        self.left_graph = GraphPanel()
+        self.right_graph = GraphPanel()
 
-        self.left_panel.activity_loaded.connect(lambda track: self._update_graph(self.left_panel))
-        self.right_panel.activity_loaded.connect(lambda track: self._update_graph(self.right_panel))
+        self.left_panel.activity_loaded.connect(lambda track: self._update_graph(self.left_graph, self.left_panel))
+        self.right_panel.activity_loaded.connect(lambda track: self._update_graph(self.right_graph, self.right_panel))
+
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.addWidget(self.left_panel)
+        left_layout.addWidget(self.left_graph)
+
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.addWidget(self.right_panel)
+        right_layout.addWidget(self.right_graph)
 
         self.controls_panel.sync_maps_toggled.connect(self._on_sync_maps_toggled)
         self.controls_panel.sync_speed_scale_requested.connect(self._sync_speed_scales)
@@ -27,36 +38,33 @@ class MainWindow(QMainWindow):
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
 
-        maps_container = QWidget()
-        maps_layout = QHBoxLayout(maps_container)
-        maps_layout.addWidget(self.left_panel, 1)
-        maps_layout.addWidget(self.controls_panel, 0)
-        maps_layout.addWidget(self.right_panel, 1)
+        maps_splitter = QSplitter()
+        maps_splitter.addWidget(left_container)
+        maps_splitter.addWidget(self.controls_panel)
+        maps_splitter.addWidget(right_container)
 
-        self.vertical_splitter = QSplitter()
-        self.vertical_splitter.setOrientation(__import__('PyQt6.QtCore', fromlist=['Qt']).Qt.Orientation.Vertical)
-        self.vertical_splitter.addWidget(maps_container)
-        self.vertical_splitter.addWidget(self.graph_panel)
-        self.vertical_splitter.setSizes([650, 300])
-
-        main_layout.addWidget(self.vertical_splitter)
+        main_layout.addWidget(maps_splitter)
         central.setLayout(main_layout)
         self.setCentralWidget(central)
 
-    def _update_graph(self, panel):
-        if not panel.track:
+    def _update_graph(self, graph, panel):
+        if not panel.track or not panel.track.points:
             return
 
         points = panel.track.points
-        if not points:
-            return
 
-        times = [getattr(point, "timestamp", index) for index, point in enumerate(points)]
-        speeds = [getattr(point, "speed", 0) or 0 for point in points]
+        times = [
+            index
+            for index, _ in enumerate(points)
+        ]
 
-        self.graph_panel.setVisible(True)
-        self.graph_panel.set_series(times, speeds, "Velocità")
-        self.vertical_splitter.setSizes([650, 300])
+        speeds = [
+            getattr(point, "speed", 0) or 0
+            for point in points
+        ]
+
+        graph.setVisible(True)
+        graph.set_series(times, speeds, "Velocità")
 
     def _on_sync_maps_toggled(self, enabled):
         pass
@@ -72,4 +80,5 @@ class MainWindow(QMainWindow):
         self.right_panel.refresh_visible_track()
 
     def _toggle_graphs(self, visible):
-        self.graph_panel.setVisible(visible)
+        self.left_graph.setVisible(visible)
+        self.right_graph.setVisible(visible)
