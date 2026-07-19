@@ -41,6 +41,36 @@ def calculate_point_speed(previous, current):
         return None
 
 
+def calculate_speed_series(track):
+    points = getattr(track, "points", [])
+    if not points:
+        return [], []
+
+    times = [0.0]
+    speeds = [0.0]
+    first_timestamp = getattr(points[0], "timestamp", None)
+
+    for index in range(1, len(points)):
+        previous = points[index - 1]
+        current = points[index]
+
+        speed = calculate_point_speed(previous, current)
+        speeds.append(0.0 if speed is None else float(speed))
+
+        current_timestamp = getattr(current, "timestamp", None)
+        if first_timestamp is not None and current_timestamp is not None:
+            try:
+                elapsed = (current_timestamp - first_timestamp).total_seconds()
+                times.append(float(elapsed) if elapsed >= 0 else float(index))
+                continue
+            except Exception:
+                pass
+
+        times.append(float(index))
+
+    return times, speeds
+
+
 def calculate_speed_range(track):
     values = []
 
