@@ -1,3 +1,19 @@
+"""MapLibre-based vector renderer for the activity tracks.
+
+This widget is the preferred map renderer. It loads a local MapLibre page,
+pushes GeoJSON track data into JavaScript and synchronizes the map view with the
+other panel.
+
+Called by:
+    - ``ui.track_panel.TrackPanel``
+
+Consumes:
+    - ``core.analyzer.calculate_point_speed``
+    - ``core.analyzer.haversine_distance``
+    - ``core.colorizer.value_to_color``
+    - ``ui.maplibre.map.js`` public API
+"""
+
 from __future__ import annotations
 
 import json
@@ -23,9 +39,20 @@ if QWebEngineView is None:
 
 
 class VectorMapWidget(QWidget):
+    """MapLibre-backed track renderer.
+
+    Signals:
+        viewChanged: emitted when the map center/zoom/bearing/pitch changes.
+    """
+
     viewChanged = pyqtSignal(dict)
 
     def __init__(self, parent=None):
+        """Create the WebEngine view and start polling the JS map state.
+
+        Called by:
+            - ``TrackPanel`` when the preferred renderer is available
+        """
         super().__init__(parent)
         self.show_points = False
         self._ready = False
@@ -58,12 +85,22 @@ class VectorMapWidget(QWidget):
         self._poll_timer.start()
 
     def _on_load_finished(self, ok: bool):
+        """Handle page loading and flush any pending track payload.
+
+        Called by:
+            - Qt WebEngine when the HTML page finishes loading.
+        """
         self._ready = bool(ok)
         if self._ready and self._pending_payload is not None:
             self._push_track_payload(self._pending_payload)
             self._pending_payload = None
 
     def _run_js(self, script: str, callback=None):
+        """Execute JavaScript in the embedded page.
+
+        Called by:
+            - internal helpers when exchanging state with MapLibre
+        """
         if callback is None:
             self.view.page().runJavaScript(script)
             return
@@ -71,6 +108,11 @@ class VectorMapWidget(QWidget):
 
     @staticmethod
     def _normalize_view_state(state: Any) -> dict[str, Any]:
+        """Normalize a raw JavaScript view state payload.
+
+        Returns:
+            dict[str, Any]: Safe state dictionary with center/zoom/bearing/pitch.
+        """
         default = {
             "center": [10.73333, 44.58333],
             "zoom": 14,
@@ -103,6 +145,11 @@ class VectorMapWidget(QWidget):
         }
 
     def _poll_view_state(self):
+        """Poll the JS page for the current camera state.
+
+        Called by:
+            - internal QTimer every 150 ms.
+        """
         if not self._ready:
             return
 
@@ -112,15 +159,27 @@ class VectorMapWidget(QWidget):
         )
 
     def _handle_view_state(self, state: Any):
+        """Store and emit the current view state when it changes."""
         normalized = self._normalize_view_state(state)
         if normalized != self._last_view_state:
             self._last_view_state = normalized
             self.viewChanged.emit(normalized)
 
     def get_view_state(self) -> dict[str, Any]:
+        """Return the last known camera state.
+
+        Called by:
+            - ``MainWindow._copy_map_view``
+        """
         return dict(self._last_view_state)
 
     def set_view_state(self, state: Any):
+        """Apply a camera state to the web map.
+
+        Called by:
+            - ``MainWindow._copy_map_view``
+            - ``MainWindow._on_map_view_changed``
+        """
         normalized = self._normalize_view_state(state)
         self._last_view_state = normalized
         if not self._ready:
@@ -130,9 +189,11 @@ class VectorMapWidget(QWidget):
         )
 
     def _push_track_payload(self, payload: dict[str, Any]):
+        """Send the GeoJSON payload to the JS renderer."""
         self._run_js(f"window.appMap && window.appMap.setTrack({json.dumps(payload, ensure_ascii=False)});")
 
     def clear_track(self):
+        """Clear the current track and restore the default view."""
         if not self._ready:
             self._pending_payload = None
             return
@@ -140,6 +201,7 @@ class VectorMapWidget(QWidget):
 
     @staticmethod
     def _qcolor_to_hex(color: Any) -> str:
+        """Convert a QColor-like object to a hex string."""
         try:
             return color.name()
         except Exception:
@@ -147,6 +209,7 @@ class VectorMapWidget(QWidget):
 
     @staticmethod
     def _segment_slope(previous: Any, current: Any):
+        """Compute the percentage slope between two consecutive points."""
         distance = haversine_distance(previous, current)
         if distance <= 0:
             return None
@@ -157,6 +220,11 @@ class VectorMapWidget(QWidget):
         return ((current_alt - previous_alt) / distance) * 100
 
     def _segment_value(self, previous: Any, current: Any, color_mode: str):
+        """Return the numeric value used for segment coloring.
+
+        Called by:
+            - ``draw_track``
+        """
         if color_mode == "Velocità":
             return calculate_point_speed(previous, current)
         if color_mode == "Pendenza":
@@ -164,6 +232,11 @@ class VectorMapWidget(QWidget):
         return None
 
     def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
+        """Send the visible track to MapLibre and fit the current bounds.
+
+        Called by:
+            - ``TrackPanel._render_visible_track``
+        """
         points = getattr(track, "points", None) or []
         if len(points) < 2:
             self.clear_track()
