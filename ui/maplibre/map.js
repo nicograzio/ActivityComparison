@@ -1,5 +1,17 @@
 /* global maplibregl */
 
+/**
+ * Local MapLibre renderer entry point.
+ *
+ * Public API exposed to Python through ``window.appMap``:
+ *   - clearTrack()
+ *   - setTrack(payload)
+ *   - getViewState()
+ *   - setViewState(state)
+ *
+ * Called by:
+ *   - ``ui.vector_map_widget.VectorMapWidget``
+ */
 maplibregl.prewarm();
 
 const DEFAULT_CENTER = [10.73333, 44.58333]; // Casalgrande
@@ -18,16 +30,34 @@ const map = new maplibregl.Map({
 
 map.addControl(new maplibregl.NavigationControl({showCompass:false}), 'top-right');
 
+/**
+ * Remove a layer/source pair if it exists.
+ *
+ * Called by:
+ *   - clearTrack()
+ */
 function removeLayerSource(id) {
   if (map.getLayer(id)) map.removeLayer(id);
   if (map.getSource(id)) map.removeSource(id);
 }
 
+/**
+ * Remove the current track and restore the default camera.
+ *
+ * Called by:
+ *   - VectorMapWidget.clear_track()
+ */
 function clearTrack() {
   ['track-casing','track-line','track-points'].forEach(removeLayerSource);
   map.easeTo({center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, duration:0});
 }
 
+/**
+ * Render a colored GeoJSON track on the map.
+ *
+ * Called by:
+ *   - VectorMapWidget._push_track_payload()
+ */
 function setTrack(payload) {
   clearTrack();
   if (!payload || !payload.geojson) return;
@@ -55,6 +85,15 @@ function setTrack(payload) {
   }
 }
 
+/**
+ * Read the current map camera state.
+ *
+ * Called by:
+ *   - VectorMapWidget._poll_view_state()
+ *
+ * Returns:
+ *   Plain serializable camera state.
+ */
 function getViewState() {
   const center = map.getCenter();
   return {
@@ -65,6 +104,12 @@ function getViewState() {
   };
 }
 
+/**
+ * Apply a camera state without animation.
+ *
+ * Called by:
+ *   - VectorMapWidget.set_view_state()
+ */
 function setViewState(state) {
   if (!state) return;
   const options = {duration:0};
