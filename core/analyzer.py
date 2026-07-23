@@ -1,3 +1,17 @@
+"""Core numerical helpers for activity comparison.
+
+This module centralizes distance, speed, slope, distance profiles and track
+trimming so that UI widgets only orchestrate the flow.
+
+Called by:
+    - ``ui.track_panel.TrackPanel`` for rendering and trim updates
+    - ``ui.main_window.MainWindow`` for graph generation and scale sync
+    - map renderers for segment coloring
+
+Consumes:
+    - ``core.track.Track`` and ``core.track.TrackPoint``
+"""
+
 import math
 from datetime import timedelta
 
@@ -5,6 +19,22 @@ from core.track import Track, TrackPoint
 
 
 def haversine_distance(a, b):
+    """Return the geodesic distance between two points in meters.
+
+    Called by:
+        - ``calculate_point_speed``
+        - ``calculate_slope_range``
+        - ``track_distance_profile``
+        - ``trim_track_by_distance``
+        - map renderers when evaluating segment values
+
+    Args:
+        a: First point with ``latitude`` and ``longitude``.
+        b: Second point with ``latitude`` and ``longitude``.
+
+    Returns:
+        float: Distance in meters.
+    """
     radius = 6371000
     lat1 = math.radians(a.latitude)
     lat2 = math.radians(b.latitude)
@@ -16,6 +46,24 @@ def haversine_distance(a, b):
 
 
 def calculate_point_speed(previous, current):
+    """Calculate the speed of a segment in km/h.
+
+    If the source already provides speed and it is non-negative, that value is
+    reused. Otherwise speed is derived from distance and timestamp delta.
+
+    Called by:
+        - ``calculate_speed_series``
+        - ``calculate_speed_range``
+        - ``ui.map_widget.MapWidget.get_segment_value``
+        - ``ui.vector_map_widget.VectorMapWidget._segment_value``
+
+    Args:
+        previous: Previous track point.
+        current: Current track point.
+
+    Returns:
+        float | None: Speed in km/h, or ``None`` when it cannot be computed.
+    """
     speed = getattr(current, "speed", None)
 
     if isinstance(speed, (int, float)) and speed >= 0:
@@ -42,6 +90,17 @@ def calculate_point_speed(previous, current):
 
 
 def calculate_speed_series(track):
+    """Build the time/speed series used by the graph widgets.
+
+    Called by:
+        - ``ui.main_window.MainWindow._update_graph``
+
+    Args:
+        track: Track to convert.
+
+    Returns:
+        tuple[list[float], list[float]]: Time samples and speed samples.
+    """
     points = getattr(track, "points", [])
     if not points:
         return [], []
@@ -72,6 +131,18 @@ def calculate_speed_series(track):
 
 
 def calculate_speed_range(track):
+    """Return the min/max speed of a track in km/h.
+
+    Called by:
+        - ``ui.track_panel.TrackPanel._current_scale_limits``
+        - ``ui.track_panel.TrackPanel.visible_speed_range``
+
+    Args:
+        track: Track to inspect.
+
+    Returns:
+        tuple[float | None, float | None]: Minimum and maximum speed.
+    """
     values = []
 
     for i in range(1, len(track.points)):
@@ -86,6 +157,17 @@ def calculate_speed_range(track):
 
 
 def calculate_slope_range(track):
+    """Return the min/max slope percentage for a track.
+
+    Called by:
+        - ``ui.track_panel.TrackPanel._current_scale_limits``
+
+    Args:
+        track: Track to inspect.
+
+    Returns:
+        tuple[float | None, float | None]: Minimum and maximum slope.
+    """
     values = []
 
     for i in range(1, len(track.points)):
@@ -106,6 +188,18 @@ def calculate_slope_range(track):
 
 
 def track_distance_profile(track):
+    """Return cumulative distance samples and the total distance.
+
+    Called by:
+        - ``ui.track_panel.TrackPanel.import_file``
+        - ``trim_track_by_distance``
+
+    Args:
+        track: Track to analyze.
+
+    Returns:
+        tuple[list[float], float]: Cumulative distance samples and total meters.
+    """
     distances = [0.0]
     total = 0.0
 
@@ -119,6 +213,14 @@ def track_distance_profile(track):
 
 
 def _interpolate_number(start, end, fraction):
+    """Interpolate a scalar value between two endpoints.
+
+    Called by:
+        - ``_interpolate_point``
+
+    Returns:
+        interpolated value or ``None``.
+    """
     if start is None or end is None:
         return None
     try:
@@ -128,6 +230,14 @@ def _interpolate_number(start, end, fraction):
 
 
 def _interpolate_timestamp(start, end, fraction):
+    """Interpolate a timestamp between two endpoints.
+
+    Called by:
+        - ``_interpolate_point``
+
+    Returns:
+        interpolated timestamp or ``None``.
+    """
     if start is None or end is None:
         return None
     try:
@@ -140,6 +250,19 @@ def _interpolate_timestamp(start, end, fraction):
 
 
 def _interpolate_point(previous, current, fraction):
+    """Create a synthetic point between two samples.
+
+    Called by:
+        - ``trim_track_by_distance`` when the trim boundary cuts a segment
+
+    Args:
+        previous: First endpoint.
+        current: Second endpoint.
+        fraction: Fraction of the segment where the synthetic point lies.
+
+    Returns:
+        TrackPoint: interpolated point.
+    """
     altitude = _interpolate_number(previous.altitude, current.altitude, fraction)
     speed = _interpolate_number(previous.speed, current.speed, fraction)
     heart_rate = _interpolate_number(previous.heart_rate, current.heart_rate, fraction)
@@ -159,6 +282,19 @@ def _interpolate_point(previous, current, fraction):
 
 
 def trim_track_by_distance(track, start_distance_m, end_distance_m):
+    """Return a new track trimmed to a distance interval.
+
+    Called by:
+        - ``ui.track_panel.TrackPanel._visible_track``
+
+    Args:
+        track: Original track.
+        start_distance_m: Start of the visible interval, in meters.
+        end_distance_m: End of the visible interval, in meters.
+
+    Returns:
+        Track: Trimmed track.
+    """
     trimmed = Track(track.name)
     points = track.points
 
