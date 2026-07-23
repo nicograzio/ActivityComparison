@@ -1,9 +1,29 @@
+"""FIT import helpers.
+
+This module parses FIT activities into the internal ``Track`` model.
+
+Called by:
+    - ``ui.track_panel.TrackPanel.import_file``
+"""
+
 from fitparse import FitFile
 
 from core.track import Track, TrackPoint
 
 
 def load_fit(path):
+    """Load a FIT file and return a ``Track`` instance.
+
+    Called by:
+        - ``TrackPanel.import_file`` when the selected file has a ``.fit``
+          extension.
+
+    Args:
+        path: Path to the FIT file.
+
+    Returns:
+        Track: Parsed activity.
+    """
     track = Track(path)
 
     fit = FitFile(path)
