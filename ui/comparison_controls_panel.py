@@ -1,8 +1,26 @@
+"""Central comparison controls shown between the two activity panels.
+
+This panel emits user intentions only; ``MainWindow`` owns the actual
+comparison logic.
+
+Called by:
+    - ``ui.main_window.MainWindow``
+
+Signals emitted:
+    - sync_maps_toggled
+    - sync_speed_scale_requested
+    - invert_activities_requested
+    - center_traces_requested
+    - toggle_graphs_requested
+"""
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy
 
 
 class ComparisonControlsPanel(QWidget):
+    """Vertical stack of square buttons for the comparison view."""
+
     sync_maps_toggled = pyqtSignal(bool)
     sync_speed_scale_requested = pyqtSignal()
     invert_activities_requested = pyqtSignal()
@@ -10,6 +28,11 @@ class ComparisonControlsPanel(QWidget):
     toggle_graphs_requested = pyqtSignal(bool)
 
     def __init__(self):
+        """Create the control column and wire button signals.
+
+        Called by:
+            - ``MainWindow``
+        """
         super().__init__()
         self.setObjectName("comparisonControlsPanel")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -94,6 +117,14 @@ class ComparisonControlsPanel(QWidget):
         )
 
     def _build_button(self, text: str, label: str, tooltip: str, checkable: bool) -> QPushButton:
+        """Create one square button used in the comparison column.
+
+        Called by:
+            - ``__init__`` for each button
+
+        Returns:
+            QPushButton: Configured control button.
+        """
         button = QPushButton(text)
         button.setObjectName(label)
         button.setProperty("class", "comparisonControlButton")
