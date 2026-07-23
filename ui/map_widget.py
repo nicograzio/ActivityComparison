@@ -1,3 +1,17 @@
+"""Fallback raster map renderer based on OpenStreetMap tiles.
+
+Used when the MapLibre/WebEngine renderer is not available. It draws the track
+as a colored polyline on top of a tile-based map.
+
+Called by:
+    - ``ui.track_panel.TrackPanel`` when the preferred renderer cannot load
+
+Consumes:
+    - ``core.analyzer.calculate_point_speed``
+    - ``core.analyzer.haversine_distance``
+    - ``core.colorizer.value_to_color``
+"""
+
 import math
 import os
 import requests
@@ -11,10 +25,17 @@ from core.analyzer import calculate_point_speed
 
 
 class MapWidget(QGraphicsView):
+    """Raster activity map with OSM tiles and a track polyline."""
+
     TILE_SIZE = 256
     viewChanged = pyqtSignal(dict)
 
     def __init__(self):
+        """Create the graphics scene, tile cache and interaction settings.
+
+        Called by:
+            - ``TrackPanel`` as a fallback renderer
+        """
         super().__init__()
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -32,9 +53,19 @@ class MapWidget(QGraphicsView):
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def _emit_view_changed(self):
+        """Emit the current camera state to listeners."""
         self.viewChanged.emit(self.get_view_state())
 
     def get_view_state(self):
+        """Return the current scene center and zoom state.
+
+        Called by:
+            - ``MainWindow._copy_map_view``
+            - ``MainWindow._on_map_view_changed``
+
+        Returns:
+            dict: Camera state with center, scale and zoom.
+        """
         center = self.mapToScene(self.viewport().rect().center())
         transform = self.transform()
         return {
@@ -44,6 +75,12 @@ class MapWidget(QGraphicsView):
         }
 
     def set_view_state(self, state):
+        """Apply a saved camera state to the raster map.
+
+        Called by:
+            - ``MainWindow._copy_map_view``
+            - ``MainWindow._on_map_view_changed``
+        """
         if not isinstance(state, dict):
             return
         center = state.get("center")
@@ -63,30 +100,48 @@ class MapWidget(QGraphicsView):
         self._emit_view_changed()
 
     def wheelEvent(self, event):
+        """Zoom in or out around the mouse position.
+
+        Called by:
+            - Qt mouse wheel events
+        """
         factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
         self.scale(factor, factor)
         self._emit_view_changed()
 
     def mouseReleaseEvent(self, event):
+        """Notify listeners after a drag pan completes."""
         super().mouseReleaseEvent(event)
         self._emit_view_changed()
 
     def geo_to_pixel(self, lat, lon, zoom):
+        """Project latitude/longitude to OSM tile pixels.
+
+        Called by:
+            - tile loading and track drawing routines
+        """
         size = self.TILE_SIZE * (2 ** zoom)
         return ((lon + 180) / 360 * size,
                 (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size)
 
     def clear_track(self):
+        """Remove all rendered track items from the scene."""
         for item in self.track_items:
             self.scene.removeItem(item)
         self.track_items.clear()
 
     def clear_tiles(self):
+        """Remove all tile items from the scene."""
         for item in self.tile_items:
             self.scene.removeItem(item)
         self.tile_items.clear()
 
     def add_tile(self, x, y, zoom, px, py):
+        """Load a single OSM tile and place it in the scene.
+
+        Called by:
+            - ``load_map_area``
+        """
         try:
             cache = os.path.join(self.cache_dir, f"{zoom}_{x}_{y}.png")
             pixmap = QPixmap()
@@ -108,6 +163,7 @@ class MapWidget(QGraphicsView):
             pass
 
     def load_map_area(self, lat, lon):
+        """Load a 7x7 tile area around a geographic center."""
         self.clear_tiles()
         cx, cy = self.geo_to_pixel(lat, lon, self.zoom_level)
         tx, ty = int(cx / self.TILE_SIZE), int(cy / self.TILE_SIZE)
@@ -116,6 +172,7 @@ class MapWidget(QGraphicsView):
                 self.add_tile(x, y, self.zoom_level, x * self.TILE_SIZE - cx, y * self.TILE_SIZE - cy)
 
     def calculate_zoom(self, min_lat, max_lat, min_lon, max_lon):
+        """Choose a zoom level from the track bounding box size."""
         span = max(max_lat - min_lat, max_lon - min_lon)
         if span > 2: return 8
         if span > 1: return 10
@@ -126,11 +183,17 @@ class MapWidget(QGraphicsView):
         return 16
 
     def get_segment_value(self, previous, point, color_mode):
+        """Return the color metric for a track segment."""
         if color_mode == "Velocità":
             return calculate_point_speed(previous, point)
         return None
 
     def draw_track(self, track, color_mode="Nessuna", minimum=None, maximum=None):
+        """Render a track as colored line segments over the tile scene.
+
+        Called by:
+            - ``TrackPanel._render_visible_track``
+        """
         old_transform = self.transform()
         old_center = self.mapToScene(self.viewport().rect().center())
         self.clear_track()
