@@ -1,3 +1,17 @@
+"""Main window orchestration for ActivityComparison.
+
+This module wires together the two activity panels, the comparison control
+column, the graph panels and the map synchronization logic.
+
+Called by:
+    - ``main.py`` when the application starts
+
+Consumes:
+    - ``ui.track_panel.TrackPanel``
+    - ``ui.comparison_controls_panel.ComparisonControlsPanel``
+    - ``ui.graph_panel.GraphPanel``
+"""
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
 
@@ -8,7 +22,28 @@ from core.analyzer import calculate_speed_series
 
 
 class MainWindow(QMainWindow):
+    """Top-level GUI controller.
+
+    Responsibilities:
+        - create the side-by-side activity layout
+        - connect map synchronization
+        - keep the graph panels updated
+        - coordinate the comparison buttons
+
+    Created by:
+        - ``main.py``
+    """
+
     def __init__(self):
+        """Build the full main window layout and connect signals.
+
+        Calls:
+            - ``_build_side_splitter``
+            - ``_connect_map_sync``
+
+        Side effects:
+            Creates the central widgets and connects all UI signals.
+        """
         super().__init__()
         self.setWindowTitle("Activity Comparison")
         self._sync_maps_enabled = False
@@ -56,6 +91,14 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _build_side_splitter(panel, graph):
+        """Create a vertical splitter with one activity panel and one graph.
+
+        Called by:
+            - ``__init__`` when building the left and right columns
+
+        Returns:
+            QSplitter: Vertical splitter with panel over graph.
+        """
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(panel)
@@ -67,6 +110,16 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _map_supports_view_sync(panel):
+        """Check whether the panel map widget exposes the sync API.
+
+        Called by:
+            - ``_connect_map_sync``
+            - ``_copy_map_view``
+            - ``_on_map_view_changed``
+
+        Returns:
+            bool: True when the active map renderer can share its state.
+        """
         map_widget = getattr(panel, "map", None)
         return bool(
             map_widget is not None
@@ -76,6 +129,15 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_map_sync(self, left_panel, right_panel):
+        """Connect the viewChanged signal of both maps.
+
+        Called by:
+            - ``__init__``
+
+        Side effects:
+            Hooks the map widgets so a change in one panel can be reflected in
+            the other when the synchronization toggle is active.
+        """
         if self._map_supports_view_sync(left_panel):
             left_panel.map.viewChanged.connect(
                 lambda state: self._on_map_view_changed(left_panel, state)
@@ -86,11 +148,29 @@ class MainWindow(QMainWindow):
             )
 
     def _on_sync_maps_toggled(self, enabled: bool):
+        """Toggle bidirectional map view synchronization.
+
+        Called by:
+            - ``ComparisonControlsPanel.sync_maps_toggled``
+
+        Side effects:
+            Stores the toggle state and copies the first panel view onto the
+            second one when enabled.
+        """
         self._sync_maps_enabled = bool(enabled)
         if self._sync_maps_enabled:
             self._copy_map_view(self.left_panel, self.right_panel)
 
     def _copy_map_view(self, source_panel, target_panel):
+        """Copy the view state from one panel to the other.
+
+        Called by:
+            - ``_on_sync_maps_toggled``
+
+        Side effects:
+            Uses the active renderer API to clone center, zoom, bearing and
+            pitch between the two maps.
+        """
         if not self._map_supports_view_sync(source_panel) or not self._map_supports_view_sync(target_panel):
             return
         state = source_panel.map.get_view_state()
@@ -103,6 +183,15 @@ class MainWindow(QMainWindow):
             self._syncing_maps = False
 
     def _on_map_view_changed(self, source_panel, state):
+        """Mirror a changed map view to the opposite panel.
+
+        Called by:
+            - the ``viewChanged`` signal emitted by the active map widgets
+
+        Args:
+            source_panel: The panel that produced the state.
+            state: Serialized map state.
+        """
         if not self._sync_maps_enabled or self._syncing_maps:
             return
         target_panel = self.right_panel if source_panel is self.left_panel else self.left_panel
@@ -115,6 +204,15 @@ class MainWindow(QMainWindow):
             self._syncing_maps = False
 
     def _sync_speed_scales(self):
+        """Apply a shared speed scale across both activities.
+
+        Called by:
+            - ``ComparisonControlsPanel.sync_speed_scale_requested``
+
+        Side effects:
+            Reads the current visible range from both panels, computes a shared
+            minimum/maximum and re-renders both tracks.
+        """
         ranges = []
         for panel in (self.left_panel, self.right_panel):
             minimum, maximum = panel.visible_speed_range()
@@ -129,6 +227,19 @@ class MainWindow(QMainWindow):
             panel.set_speed_scale_limits(shared_min, shared_max)
 
     def _update_graph(self, graph, track):
+        """Update a graph panel with the visible track series.
+
+        Called by:
+            - ``TrackPanel.visible_track_changed``
+
+        Args:
+            graph: Target ``GraphPanel``.
+            track: Visible track to render.
+
+        Side effects:
+            Clears the graph when no track is available or redraws the speed
+            series when data are present.
+        """
         if not track or not getattr(track, "points", None):
             graph.clear_graph()
             return
@@ -142,6 +253,11 @@ class MainWindow(QMainWindow):
         graph.set_series(times, speeds, "Velocità")
 
     def _invert_activities(self):
+        """Swap the left and right activities, graphs and splitters.
+
+        Called by:
+            - ``ComparisonControlsPanel.invert_activities_requested``
+        """
         self.left_panel, self.right_panel = self.right_panel, self.left_panel
         self.left_graph, self.right_graph = self.right_graph, self.left_graph
 
@@ -150,6 +266,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _reset_splitter(splitter, top_widget, bottom_widget):
+        """Replace the contents of a splitter with two new widgets.
+
+        Called by:
+            - ``_invert_activities``
+
+        Side effects:
+            Removes existing child widgets from the splitter and inserts the new
+            panel/graph pair.
+        """
         while splitter.count():
             widget = splitter.widget(0)
             widget.setParent(None)
@@ -158,10 +283,23 @@ class MainWindow(QMainWindow):
         splitter.setSizes([650, 300])
 
     def _center_traces(self):
+        """Recompute the visible section for both activities.
+
+        Called by:
+            - ``ComparisonControlsPanel.center_traces_requested``
+        """
         self.left_panel.refresh_visible_track()
         self.right_panel.refresh_visible_track()
 
     def _toggle_graphs(self, visible: bool):
+        """Show or hide both graph panels.
+
+        Called by:
+            - ``ComparisonControlsPanel.toggle_graphs_requested``
+
+        Args:
+            visible: Desired visibility state.
+        """
         self._graphs_visible = bool(visible)
         self.left_graph.setVisible(visible)
         self.right_graph.setVisible(visible)
