@@ -1,3 +1,15 @@
+"""Graph panel used to display the activity series below each map.
+
+The widget prefers Matplotlib with the QtAgg canvas and falls back to a
+message when the plotting backend is not available.
+
+Called by:
+    - ``ui.main_window.MainWindow``
+
+Consumed by:
+    - ``MainWindow._update_graph``
+"""
+
 from PyQt6.QtCore import QSize
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
@@ -10,9 +22,18 @@ except ImportError:
 
 
 class GraphPanel(QWidget):
-    """Activity chart container."""
+    """Render a time series for one activity.
+
+    Created by:
+        - ``MainWindow``
+    """
 
     def __init__(self):
+        """Create the graph container and initialize the plotting backend.
+
+        Side effects:
+            If Matplotlib is unavailable, a placeholder label is shown.
+        """
         super().__init__()
         self._time = []
         self._values = []
@@ -37,6 +58,16 @@ class GraphPanel(QWidget):
         self.setLayout(layout)
 
     def set_series(self, time_values, data_values, label="Valore"):
+        """Replace the current plot data and redraw the graph.
+
+        Called by:
+            - ``MainWindow._update_graph``
+
+        Args:
+            time_values: X axis samples.
+            data_values: Y axis samples.
+            label: Y axis label to display.
+        """
         self._time = list(time_values)
         self._values = list(data_values)
 
@@ -51,6 +82,11 @@ class GraphPanel(QWidget):
         self.canvas.draw_idle()
 
     def clear_graph(self):
+        """Clear the graph state and remove the plotted line.
+
+        Called by:
+            - ``MainWindow._update_graph`` when no visible track is available
+        """
         self._time.clear()
         self._values.clear()
         if self.axis:
