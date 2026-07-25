@@ -33,6 +33,7 @@ class RangeSlider(QWidget):
         self.upper = 1000
         self.dragging = None
         self.setMinimumHeight(30)
+        self.margin = 10 
 
     def setRange(self, minimum, maximum):
         """Set the allowed range for both handles.
@@ -62,21 +63,22 @@ class RangeSlider(QWidget):
         self.update()
 
     def _pos(self, value):
-        """Convert a slider value to widget coordinates.
-
-        Called by:
-            - ``paintEvent``
-            - ``mousePressEvent``
-        """
-        return int((value-self.minimum)/(self.maximum-self.minimum)*self.width())
+        """Convert a slider value to widget coordinates, considerando il margine."""
+        larghezza_utile = self.width() - (self.margin * 2)
+        if larghezza_utile <= 0:
+            return self.margin
+        frazione = (value - self.minimum) / (self.maximum - self.minimum)
+        return int(self.margin + (frazione * larghezza_utile))
 
     def _value(self, x):
-        """Convert an x coordinate to slider units.
-
-        Called by:
-            - ``mouseMoveEvent``
-        """
-        return int(self.minimum + x/max(1,self.width())*(self.maximum-self.minimum))
+        """Convert an x coordinate to slider units, considerando il margine."""
+        larghezza_utile = self.width() - (self.margin * 2)
+        if larghezza_utile <= 0:
+            return self.minimum
+        # Sottrae il margine iniziale e mappa i pixel nell'intervallo corretto
+        frazione = (x - self.margin) / larghezza_utile
+        frazione = max(0.0, min(1.0, frazione))  # Evita di uscire fuori dai bordi
+        return int(self.minimum + frazione * (self.maximum - self.minimum))
 
     def mousePressEvent(self, event):
         """Pick the handle closest to the click position.

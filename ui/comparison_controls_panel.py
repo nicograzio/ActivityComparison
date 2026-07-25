@@ -85,6 +85,7 @@ class ComparisonControlsPanel(QWidget):
             checkable=True,
         )
         self.graphs_button.toggled.connect(self.toggle_graphs_requested.emit)
+        self.graphs_button.setChecked(True)
         layout.addWidget(self.graphs_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         layout.addStretch(1)
