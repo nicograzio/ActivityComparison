@@ -465,6 +465,7 @@ class TrackPanel(QWidget):
         if mode == ScaleMode.MANUAL:
             self.scale_mode = ScaleMode.MANUAL
             self.scale_mode_button.setText("Manuale")
+            self.scale_mode_button.setChecked(True)
             self.min_value.setEnabled(True)
             self.max_value.setEnabled(True)
             if manual_min is not None and manual_max is not None:
@@ -481,6 +482,7 @@ class TrackPanel(QWidget):
         else:
             self.scale_mode = ScaleMode.AUTO
             self.scale_mode_button.setText("Automatico")
+            self.scale_mode_button.setChecked(False)
             self.min_value.setEnabled(False)
             self.max_value.setEnabled(False)
             if manual_min is not None and manual_max is not None:
@@ -512,6 +514,8 @@ class TrackPanel(QWidget):
             - triggers a re-render
             - emits ``scale_mode_changed`` for ``MainWindow`` synchronization
         """
+        self.min_value.clearFocus()
+        self.max_value.clearFocus()
         mode = ScaleMode.MANUAL if checked else ScaleMode.AUTO
         self._apply_mode_state(mode)
         self.scale_mode_changed.emit(self.scale_mode)

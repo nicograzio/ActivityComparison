@@ -354,12 +354,31 @@ class MainWindow(QMainWindow):
 
         # When synced and user tries to switch to AUTO, disable sync instead
         if mode == ScaleMode.AUTO:
+            """
             self._sync_scales_enabled = False
             self.controls_panel.sync_scales_button.blockSignals(True)
             try:
                 self.controls_panel.sync_scales_button.setChecked(False)
             finally:
                 self.controls_panel.sync_scales_button.blockSignals(False)
+            
+            Il codice sopra è errato.
+            Bisogna che alle tracce venga applicato l'automatico e che venga ricalcolta il min e il max assoluto
+            """
+            mode = self.left_panel._current_mode()
+            ranges = []
+            for panel in (self.left_panel, self.right_panel):
+                mini, maxi = panel.get_auto_limits_for_mode(mode)
+                if mini is not None and maxi is not None:
+                    ranges.append((mini, maxi))
+
+            if ranges:
+                shared_min = min(r[0] for r in ranges)
+                shared_max = max(r[1] for r in ranges)
+
+                # Force both panels to Automatic mode with the shared limits
+                self.left_panel.apply_scale_mode(ScaleMode.AUTO, shared_min, shared_max)
+                self.right_panel.apply_scale_mode(ScaleMode.AUTO, shared_min, shared_max)
             return
 
         # If switching to MANUAL, apply the same limits to the other panel
