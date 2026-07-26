@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
-from ui.track_panel import TrackPanel
+from ui.track_panel import TrackPanel, ScaleMode
 from ui.graph_panel import GraphPanel
 from core.analyzer import calculate_speed_series
 
@@ -48,13 +48,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Activity Comparison")
         self._sync_maps_enabled = False
         self._syncing_maps = False
+        self._sync_scales_enabled = False
+        self._syncing_scales = False
         self._graphs_visible = True
+        # Store the original scale settings when sync is enabled for restoration when disabled
+        self._left_sync_backup = None
+        self._right_sync_backup = None
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
 
         self.left_panel = TrackPanel("Activity A")
         self.right_panel = TrackPanel("Activity B")
+        self.left_panel.other_panel = self.right_panel
+        self.right_panel.other_panel = self.left_panel
         self.controls_panel = ComparisonControlsPanel()
         self.left_graph = GraphPanel()
         self.right_graph = GraphPanel()
@@ -62,15 +69,43 @@ class MainWindow(QMainWindow):
         self.left_panel.visible_track_changed.connect(
             lambda track, graph=self.left_graph: self._update_graph(graph, track)
         )
+        self.left_panel.visible_track_changed.connect(
+            lambda _: self._on_visible_track_changed(self.left_panel)
+        )
+        self.left_panel.activity_loaded.connect(self._check_sync_controls_availability)
+        self.left_panel.manual_limits_changed.connect(
+            lambda min_v, max_v: self._on_manual_limits_changed(self.left_panel, min_v, max_v)
+        )
+        self.left_panel.scale_mode_changed.connect(
+            lambda mode: self._on_scale_mode_changed(self.left_panel, mode)
+        )
+
         self.right_panel.visible_track_changed.connect(
             lambda track, graph=self.right_graph: self._update_graph(graph, track)
+        )
+        self.right_panel.visible_track_changed.connect(
+            lambda _: self._on_visible_track_changed(self.right_panel)
+        )
+        self.right_panel.activity_loaded.connect(self._check_sync_controls_availability)
+        self.right_panel.manual_limits_changed.connect(
+            lambda min_v, max_v: self._on_manual_limits_changed(self.right_panel, min_v, max_v)
+        )
+        self.right_panel.scale_mode_changed.connect(
+            lambda mode: self._on_scale_mode_changed(self.right_panel, mode)
+        )
+
+        self.left_panel.color_mode.currentTextChanged.connect(
+            lambda mode: self._on_color_mode_changed(self.left_panel, mode)
+        )
+        self.right_panel.color_mode.currentTextChanged.connect(
+            lambda mode: self._on_color_mode_changed(self.right_panel, mode)
         )
 
         self.left_splitter = self._build_side_splitter(self.left_panel, self.left_graph)
         self.right_splitter = self._build_side_splitter(self.right_panel, self.right_graph)
 
         self.controls_panel.sync_maps_toggled.connect(self._on_sync_maps_toggled)
-        self.controls_panel.sync_speed_scale_requested.connect(self._sync_speed_scales)
+        self.controls_panel.sync_scales_toggled.connect(self._on_sync_scales_toggled)
         self.controls_panel.invert_activities_requested.connect(self._invert_activities)
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
@@ -203,28 +238,186 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_maps = False
 
-    def _sync_speed_scales(self):
-        """Apply a shared speed scale across both activities.
+    def _on_sync_scales_toggled(self, enabled: bool):
+        """Toggle scale synchronization across both activities.
 
         Called by:
-            - ``ComparisonControlsPanel.sync_speed_scale_requested``
+            - ``ComparisonControlsPanel.sync_scales_toggled``
 
         Side effects:
-            Reads the current visible range from both panels, computes a shared
-            minimum/maximum and re-renders both tracks.
+            - When enabling: takes the color mode from panel A (master),
+              calculates absolute min/max across both visible tracks,
+              forces both panels to Manual mode with the shared limits.
+            - When disabling: restores each panel's previous independent settings.
         """
-        ranges = []
-        for panel in (self.left_panel, self.right_panel):
-            minimum, maximum = panel.visible_speed_range()
-            if minimum is not None and maximum is not None:
-                ranges.append((minimum, maximum))
-        if not ranges:
+        self._sync_scales_enabled = bool(enabled)
+        self.left_panel.sync_scales_enabled = bool(enabled)
+        self.right_panel.sync_scales_enabled = bool(enabled)
+        if self._sync_scales_enabled:
+            # Both tracks must be loaded to synchronize scales.
+            if self.left_panel.track is None or self.right_panel.track is None:
+                self._sync_scales_enabled = False
+                return
+
+            # Backup current scale mode and limits before synchronization
+            self._left_sync_backup = (
+                self.left_panel.scale_mode,
+                self.left_panel.manual_scale_min,
+                self.left_panel.manual_scale_max
+            )
+            self._right_sync_backup = (
+                self.right_panel.scale_mode,
+                self.right_panel.manual_scale_min,
+                self.right_panel.manual_scale_max
+            )
+
+            # When enabling sync, take the color mode from panel A (left, master)
+            master_mode = self.left_panel._current_mode()
+            self.right_panel.set_color_mode(master_mode)
+
+            # Calculate absolute min/max across both visible tracks
+            self._syncing_scales = True
+            try:
+                mode = master_mode
+                ranges = []
+                for panel in (self.left_panel, self.right_panel):
+                    mini, maxi = panel.get_auto_limits_for_mode(mode)
+                    if mini is not None and maxi is not None:
+                        ranges.append((mini, maxi))
+
+                if ranges:
+                    shared_min = min(r[0] for r in ranges)
+                    shared_max = max(r[1] for r in ranges)
+
+                    # Force both panels to Automatic mode with the shared limits
+                    self.left_panel.apply_scale_mode(ScaleMode.AUTO, shared_min, shared_max)
+                    self.right_panel.apply_scale_mode(ScaleMode.AUTO, shared_min, shared_max)
+            finally:
+                self._syncing_scales = False
+        else:
+            # When disabling sync, restore previous settings
+            if self._left_sync_backup:
+                mode, min_val, max_val = self._left_sync_backup
+                self._syncing_scales = True
+                try:
+                    if mode == ScaleMode.MANUAL and min_val is not None and max_val is not None:
+                        self.left_panel.apply_scale_mode(ScaleMode.MANUAL, min_val, max_val)
+                    else:
+                        self.left_panel.apply_scale_mode(ScaleMode.AUTO)
+                finally:
+                    self._syncing_scales = False
+                self._left_sync_backup = None
+
+            if self._right_sync_backup:
+                mode, min_val, max_val = self._right_sync_backup
+                self._syncing_scales = True
+                try:
+                    if mode == ScaleMode.MANUAL and min_val is not None and max_val is not None:
+                        self.right_panel.apply_scale_mode(ScaleMode.MANUAL, min_val, max_val)
+                    else:
+                        self.right_panel.apply_scale_mode(ScaleMode.AUTO)
+                finally:
+                    self._syncing_scales = False
+                self._right_sync_backup = None
+
+    def _on_visible_track_changed(self, source_panel):
+        """Handle track visibility changes (trimming)."""
+        if self._sync_scales_enabled and not self._syncing_scales:
+            self._syncing_scales = True
+            try:
+                target_panel = self.right_panel if source_panel is self.left_panel else self.left_panel
+                if target_panel.scale_mode == ScaleMode.AUTO:
+                    target_panel._render_visible_track()
+            finally:
+                self._syncing_scales = False
+
+    def _on_manual_limits_changed(self, source_panel, minimum, maximum):
+        """Sync manual edits if scale synchronization is active."""
+        if not self._sync_scales_enabled or self._syncing_scales:
             return
-        shared_min = min(value for value, _ in ranges)
-        shared_max = max(value for _, value in ranges)
-        for panel in (self.left_panel, self.right_panel):
-            panel.set_color_mode("Velocità")
-            panel.set_speed_scale_limits(shared_min, shared_max)
+
+        self._syncing_scales = True
+        try:
+            target_panel = self.right_panel if source_panel is self.left_panel else self.left_panel
+            target_panel.set_manual_scale_limits(minimum, maximum)
+        finally:
+            self._syncing_scales = False
+
+    def _on_scale_mode_changed(self, panel, mode):
+        """Handle scale mode changes on individual panels.
+        
+        When sync is active and manual limits change, apply them to both panels.
+        If switching to auto, disable sync since synchronized mode must be manual.
+        """
+        if not self._sync_scales_enabled or self._syncing_scales:
+            return
+
+        # When synced and user tries to switch to AUTO, disable sync instead
+        if mode == ScaleMode.AUTO:
+            self._sync_scales_enabled = False
+            self.controls_panel.sync_scales_button.blockSignals(True)
+            try:
+                self.controls_panel.sync_scales_button.setChecked(False)
+            finally:
+                self.controls_panel.sync_scales_button.blockSignals(False)
+            return
+
+        # If switching to MANUAL, apply the same limits to the other panel
+        if mode == ScaleMode.MANUAL:
+            target_panel = self.right_panel if panel is self.left_panel else self.left_panel
+            self._syncing_scales = True
+            try:
+                mini, maxi = panel.current_scale_limits()
+                target_panel.set_manual_scale_limits(mini, maxi)
+            finally:
+                self._syncing_scales = False
+
+    def _recalculate_shared_scale(self):
+        """Compute and apply absolute min/max across both visible tracks when sync is active."""
+        if self._syncing_scales or not self._sync_scales_enabled:
+            return
+
+        self._syncing_scales = True
+        try:
+            mode = self.left_panel._current_mode()
+            ranges = []
+            for panel in (self.left_panel, self.right_panel):
+                mini, maxi = panel.get_auto_limits_for_mode(mode)
+                if mini is not None and maxi is not None:
+                    ranges.append((mini, maxi))
+
+            if ranges:
+                shared_min = min(r[0] for r in ranges)
+                shared_max = max(r[1] for r in ranges)
+
+                # Update both panels with the shared limits while staying in MANUAL mode
+                self.left_panel.set_manual_scale_limits(shared_min, shared_max)
+                self.right_panel.set_manual_scale_limits(shared_min, shared_max)
+        finally:
+            self._syncing_scales = False
+
+    def _on_color_mode_changed(self, panel, mode):
+        """Handle color mode (metric) changes."""
+        if not self._sync_scales_enabled or self._syncing_scales:
+            return
+
+        if panel is self.left_panel:
+            # Master A: force right panel to follow
+            self._syncing_scales = True
+            try:
+                self.right_panel.set_color_mode(mode)
+                self._recalculate_shared_scale()
+            finally:
+                self._syncing_scales = False
+        else:
+            # If right changes, force it back to left's mode if sync is active
+            master_mode = self.left_panel._current_mode()
+            if mode != master_mode:
+                self._syncing_scales = True
+                try:
+                    self.right_panel.set_color_mode(master_mode)
+                finally:
+                    self._syncing_scales = False
 
     def _update_graph(self, graph, track):
         """Update a graph panel with the visible track series.
@@ -290,6 +483,11 @@ class MainWindow(QMainWindow):
         """
         self.left_panel.refresh_visible_track()
         self.right_panel.refresh_visible_track()
+
+    def _check_sync_controls_availability(self):
+        """Enable sync controls only if both tracks are loaded."""
+        both_loaded = self.left_panel.track is not None and self.right_panel.track is not None
+        self.controls_panel.set_sync_controls_enabled(both_loaded)
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.

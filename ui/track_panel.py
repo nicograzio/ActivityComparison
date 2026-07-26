@@ -12,9 +12,11 @@ Consumes:
     - ``core.track_capabilities.TrackCapabilities``
     - ``ui.range_slider.RangeSlider``
     - map renderer widgets
+    - gestione modalità scala Automatica / Manuale
 """
 
 from pathlib import Path
+from enum import Enum
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit
@@ -35,6 +37,21 @@ from core.analyzer import (
 )
 from core.track_capabilities import TrackCapabilities
 
+class ScaleMode(Enum):
+    """
+    Defines how the color scale is managed.
+
+    AUTO
+        The minimum and maximum values are computed automatically
+        from the currently visible portion of the track.
+
+    MANUAL
+        The user explicitly provides minimum and maximum values.
+    """
+
+    AUTO = 0
+    MANUAL = 1
+
 
 class TrackPanel(QWidget):
     """UI and state for a single imported activity.
@@ -49,6 +66,8 @@ class TrackPanel(QWidget):
 
     activity_loaded = pyqtSignal(object)
     visible_track_changed = pyqtSignal(object)
+    manual_limits_changed = pyqtSignal(float, float)
+    scale_mode_changed = pyqtSignal(object)
 
     def __init__(self, title):
         """Create the activity panel.
@@ -62,9 +81,24 @@ class TrackPanel(QWidget):
         self.full_distance_m = 0.0
         self.visible_start_m = 0.0
         self.visible_end_m = 0.0
-        self.scale_mode = "auto"
+        #
+        # Current scale mode.
+        #
+        # AUTO
+        #     Values are always calculated from the visible track.
+        #
+        # MANUAL
+        #     User-defined values.
+        #
+        self.scale_mode = ScaleMode.AUTO
+
+        #
+        # Manual limits.
+        #
         self.manual_scale_min = None
         self.manual_scale_max = None
+        self.other_panel = None
+        self.sync_scales_enabled = False
 
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
@@ -76,13 +110,31 @@ class TrackPanel(QWidget):
         toolbar.addStretch()
         toolbar.addWidget(QLabel("Colora per:"))
         self.color_mode = QComboBox()
+        self.color_mode.setEnabled(False)
         toolbar.addWidget(self.color_mode)
         self.min_value = QLineEdit()
         self.max_value = QLineEdit()
+        self.min_value.setEnabled(False)
+        self.max_value.setEnabled(False)
         self.min_value.editingFinished.connect(self._on_scale_limits_edited)
         self.max_value.editingFinished.connect(self._on_scale_limits_edited)
         toolbar.addWidget(self.min_value)
         toolbar.addWidget(self.max_value)
+        
+        self.scale_mode_button = QPushButton("Automatico")
+        self.scale_mode_button.setEnabled(False)
+        self.scale_mode_button.setCheckable(True)
+        self.scale_mode_button.setChecked(False)
+        self.scale_mode_button.setToolTip(
+            "Automatico: calcola la scala dalla traccia.\n"
+            "Manuale: permette l'inserimento dei valori."
+        )
+
+        self.scale_mode_button.toggled.connect(
+            self._on_scale_mode_changed
+        )
+        toolbar.addWidget(self.scale_mode_button)
+
         layout.addLayout(toolbar)
 
         self.info_label = QLabel("")
@@ -161,16 +213,58 @@ class TrackPanel(QWidget):
         Returns:
             tuple[float | None, float | None]: Scale limits.
         """
-        if self.scale_mode == "manual":
+        if self.scale_mode == ScaleMode.MANUAL:
             if self.manual_scale_min is not None and self.manual_scale_max is not None:
                 return self.manual_scale_min, self.manual_scale_max
             manual_limits = self._manual_scale_limits()
             if manual_limits is not None:
                 self.manual_scale_min, self.manual_scale_max = manual_limits
                 return manual_limits
-            self.scale_mode = "auto"
+            # If manual limits are requested but invalid, we don't automatically fall back to auto here,
+            # as it might cause confusion with the UI button state.
 
-        mode = self._current_mode()
+        # ScaleMode.AUTO with scale synchronization enabled
+        if self.sync_scales_enabled and self.other_panel and self.other_panel.track:
+            other_visible = self.other_panel._visible_track()
+            if other_visible:
+                my_min, my_max = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
+                other_min, other_max = self.other_panel.get_auto_limits_for_mode(self._current_mode(), other_visible)
+                
+                minimum = None
+                maximum = None
+                if my_min is not None and other_min is not None:
+                    minimum = min(my_min, other_min)
+                elif my_min is not None:
+                    minimum = my_min
+                elif other_min is not None:
+                    minimum = other_min
+
+                if my_max is not None and other_max is not None:
+                    maximum = max(my_max, other_max)
+                elif my_max is not None:
+                    maximum = my_max
+                elif other_max is not None:
+                    maximum = other_max
+                
+                return minimum, maximum
+
+        return self.get_auto_limits_for_mode(self._current_mode(), visible_track)
+
+    def get_auto_limits_for_mode(self, mode, visible_track=None):
+        """Compute automatic limits for a specific mode.
+
+        Args:
+            mode: Color mode string.
+            visible_track: Track to analyze (defaults to current visible track).
+
+        Returns:
+            tuple[float | None, float | None]: Scale limits.
+        """
+        if visible_track is None:
+            visible_track = self._visible_track()
+        if not visible_track:
+            return None, None
+
         if mode == "Velocità":
             return calculate_speed_range(visible_track)
         if mode == "Pendenza":
@@ -181,7 +275,8 @@ class TrackPanel(QWidget):
         """Select a coloring mode programmatically.
 
         Called by:
-            - ``MainWindow._sync_speed_scales``
+            - ``MainWindow._on_sync_scales_toggled``
+            - ``MainWindow._on_color_mode_changed``
 
         Args:
             mode: Combobox label to select.
@@ -194,8 +289,8 @@ class TrackPanel(QWidget):
         """Return the track trimmed to the current slider selection.
 
         Called by:
-            - ``visible_speed_range``
             - ``_render_visible_track``
+            - ``get_auto_limits_for_mode``
 
         Returns:
             Track | None: Trimmed track or ``None`` when nothing is loaded.
@@ -206,51 +301,51 @@ class TrackPanel(QWidget):
         end_m = max(self.visible_start_m, self.visible_end_m)
         return trim_track_by_distance(self.track, start_m, end_m)
 
-    def visible_speed_range(self):
-        """Return the speed range for the currently visible track portion.
-
-        Called by:
-            - ``MainWindow._sync_speed_scales``
-
-        Returns:
-            tuple[float | None, float | None]: Minimum and maximum speed.
-        """
-        visible_track = self._visible_track()
-        if not visible_track:
-            return None, None
-        return calculate_speed_range(visible_track)
-
     def current_scale_limits(self):
-        """Return the active speed scale range.
+        """Return the active scale range for the current mode.
 
         Returns:
             tuple[float | None, float | None]: Manual or automatic limits.
         """
-        if self.manual_scale_min is not None and self.manual_scale_max is not None:
-            return self.manual_scale_min, self.manual_scale_max
-        return self.visible_speed_range()
+        return self._current_scale_limits(self._visible_track())
 
-    def set_speed_scale_limits(self, minimum, maximum):
-        """Apply a manual speed scale to this panel.
+    def apply_scale_mode(self, mode: "ScaleMode", manual_min=None, manual_max=None):
+        """Programmatically switch scale mode without re-entrant signals.
 
         Called by:
-            - ``MainWindow._sync_speed_scales``
+            - ``MainWindow`` synchronization handlers (``_on_scale_mode_changed``,
+              ``_on_manual_limits_changed``, ``_on_sync_scales_toggled``)
+
+        Args:
+            mode: Target ``ScaleMode``.
+            manual_min: Optional manual lower bound (used when ``mode`` is MANUAL).
+            manual_max: Optional manual upper bound (used when ``mode`` is MANUAL).
+
+        Side effects:
+            Updates the button state with signals blocked (so this call never
+            triggers ``_on_scale_mode_changed`` recursively), then applies the
+            same state transition used for user-driven toggles.
+        """
+        self.scale_mode_button.blockSignals(True)
+        try:
+            self.scale_mode_button.setChecked(mode == ScaleMode.MANUAL)
+        finally:
+            self.scale_mode_button.blockSignals(False)
+        self._apply_mode_state(mode, manual_min, manual_max)
+
+    def set_manual_scale_limits(self, minimum: float, maximum: float):
+        """Apply a manual scale to this panel and update UI.
+
+        Called by:
+            - external callers wanting to force manual limits on this panel
 
         Args:
             minimum: Lower bound.
             maximum: Upper bound.
-
-        Side effects:
-            Stores manual limits, updates text fields and redraws the map.
         """
         if minimum is None or maximum is None or minimum >= maximum:
             return
-        self.scale_mode = "manual"
-        self.manual_scale_min = float(minimum)
-        self.manual_scale_max = float(maximum)
-        self.min_value.setText(f"{minimum:.1f}")
-        self.max_value.setText(f"{maximum:.1f}")
-        self._render_visible_track()
+        self.apply_scale_mode(ScaleMode.MANUAL, minimum, maximum)
 
     def refresh_visible_track(self):
         """Force a redraw of the visible portion of the track.
@@ -293,16 +388,26 @@ class TrackPanel(QWidget):
 
         Called by:
             - ``editingFinished`` of the min/max fields
+
+        Side effects:
+            If not already in Manual mode, switches to it (without re-entrant
+            signal cascades) and notifies listeners via ``scale_mode_changed``.
+            If already Manual, re-renders and notifies listeners via
+            ``manual_limits_changed`` so synchronized panels can follow.
         """
         manual_limits = self._manual_scale_limits()
         if manual_limits is None:
-            self.scale_mode = "auto"
-            self.manual_scale_min = None
-            self.manual_scale_max = None
+            return
+
+        was_manual = self.scale_mode_button.isChecked()
+        self.manual_scale_min, self.manual_scale_max = manual_limits
+
+        if not was_manual:
+            self.apply_scale_mode(ScaleMode.MANUAL, *manual_limits)
+            self.scale_mode_changed.emit(self.scale_mode)
         else:
-            self.scale_mode = "manual"
-            self.manual_scale_min, self.manual_scale_max = manual_limits
-        self._render_visible_track()
+            self._render_visible_track()
+            self.manual_limits_changed.emit(*manual_limits)
 
     def update_trim(self, start, end):
         """Apply the slider interval and refresh the rendered track.
@@ -341,6 +446,76 @@ class TrackPanel(QWidget):
         summary = self.capabilities.summary
         self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
 
+    def _apply_mode_state(self, mode: "ScaleMode", manual_min=None, manual_max=None):
+        """Apply the internal state, field editability and caption for a mode.
+
+        Called by:
+            - ``_on_scale_mode_changed`` (user toggled the button)
+            - ``apply_scale_mode`` (programmatic / synchronized change)
+
+        Args:
+            mode: Target ``ScaleMode``.
+            manual_min: Optional manual lower bound to apply immediately.
+            manual_max: Optional manual upper bound to apply immediately.
+
+        Side effects:
+            Always enables/disables both min and max fields together, so the
+            two fields can never end up in an inconsistent state.
+        """
+        if mode == ScaleMode.MANUAL:
+            self.scale_mode = ScaleMode.MANUAL
+            self.scale_mode_button.setText("Manuale")
+            self.min_value.setEnabled(True)
+            self.max_value.setEnabled(True)
+            if manual_min is not None and manual_max is not None:
+                self.manual_scale_min = float(manual_min)
+                self.manual_scale_max = float(manual_max)
+                self.min_value.setText(f"{manual_min:.1f}")
+                self.max_value.setText(f"{manual_max:.1f}")
+            elif self.manual_scale_min is None:
+                # Preserve whatever the fields already show (e.g. values just
+                # computed automatically) instead of leaving them blank.
+                limits = self._manual_scale_limits()
+                if limits:
+                    self.manual_scale_min, self.manual_scale_max = limits
+        else:
+            self.scale_mode = ScaleMode.AUTO
+            self.scale_mode_button.setText("Automatico")
+            self.min_value.setEnabled(False)
+            self.max_value.setEnabled(False)
+            if manual_min is not None and manual_max is not None:
+                self.min_value.setText(f"{manual_min:.1f}")
+                self.max_value.setText(f"{manual_max:.1f}")
+            else:
+                # When switching to AUTO, populate min/max fields with current auto limits
+                visible_track = self._visible_track()
+                if visible_track:
+                    auto_min, auto_max = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
+                    if auto_min is not None and auto_max is not None:
+                        self.min_value.setText(f"{auto_min:.1f}")
+                        self.max_value.setText(f"{auto_max:.1f}")
+            self.manual_scale_min = None
+            self.manual_scale_max = None
+
+        self._render_visible_track()
+
+    def _on_scale_mode_changed(self, checked: bool):
+        """
+        Handle Automatic / Manual scale mode toggled by the user.
+
+        Called by:
+            - ``scale_mode_button.toggled``
+
+        Side effects:
+            - enables/disables scale edits
+            - changes button caption
+            - triggers a re-render
+            - emits ``scale_mode_changed`` for ``MainWindow`` synchronization
+        """
+        mode = ScaleMode.MANUAL if checked else ScaleMode.AUTO
+        self._apply_mode_state(mode)
+        self.scale_mode_changed.emit(self.scale_mode)
+
     def import_file(self):
         """Open a FIT/GPX file and load it into the panel.
 
@@ -362,6 +537,8 @@ class TrackPanel(QWidget):
             self.capabilities = TrackCapabilities(self.track)
             self.file_label.setText(Path(filename).name)
             self.show_summary()
+            self.color_mode.setEnabled(True)
+            self.scale_mode_button.setEnabled(True)
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
             self.color_mode.setCurrentText("Velocità" if "Velocità" in self.capabilities.available_modes else self.capabilities.available_modes[0])

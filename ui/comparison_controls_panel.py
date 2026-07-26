@@ -8,7 +8,7 @@ Called by:
 
 Signals emitted:
     - sync_maps_toggled
-    - sync_speed_scale_requested
+    - sync_scales_toggled
     - invert_activities_requested
     - center_traces_requested
     - toggle_graphs_requested
@@ -22,7 +22,7 @@ class ComparisonControlsPanel(QWidget):
     """Vertical stack of square buttons for the comparison view."""
 
     sync_maps_toggled = pyqtSignal(bool)
-    sync_speed_scale_requested = pyqtSignal()
+    sync_scales_toggled = pyqtSignal(bool)
     invert_activities_requested = pyqtSignal()
     center_traces_requested = pyqtSignal()
     toggle_graphs_requested = pyqtSignal(bool)
@@ -51,14 +51,14 @@ class ComparisonControlsPanel(QWidget):
         self.sync_maps_button.toggled.connect(self.sync_maps_toggled.emit)
         layout.addWidget(self.sync_maps_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self.sync_speed_button = self._build_button(
+        self.sync_scales_button = self._build_button(
             "⚖️",
-            "Scala velocità comune",
-            "Applica alla due attività la stessa scala velocità",
-            checkable=False,
+            "Sincronizza scale",
+            "Sincronizza la scala dei colori tra le due attività",
+            checkable=True,
         )
-        self.sync_speed_button.clicked.connect(self.sync_speed_scale_requested.emit)
-        layout.addWidget(self.sync_speed_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.sync_scales_button.toggled.connect(self.sync_scales_toggled.emit)
+        layout.addWidget(self.sync_scales_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.invert_button = self._build_button(
             "🔄",
@@ -88,6 +88,8 @@ class ComparisonControlsPanel(QWidget):
         self.graphs_button.setChecked(True)
         layout.addWidget(self.graphs_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
+        self.set_sync_controls_enabled(False)
+
         layout.addStretch(1)
 
         self.setStyleSheet(
@@ -116,6 +118,17 @@ class ComparisonControlsPanel(QWidget):
             }
             """
         )
+
+    def set_sync_controls_enabled(self, enabled: bool):
+        """Enable or disable comparison and synchronization controls.
+
+        Called by:
+            - ``MainWindow`` when tracks are loaded/unloaded
+        """
+        self.sync_maps_button.setEnabled(enabled)
+        self.sync_scales_button.setEnabled(enabled)
+        self.invert_button.setEnabled(enabled)
+        self.center_button.setEnabled(enabled)
 
     def _build_button(self, text: str, label: str, tooltip: str, checkable: bool) -> QPushButton:
         """Create one square button used in the comparison column.
