@@ -21,10 +21,7 @@ from enum import Enum
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit
 
-try:
-    from ui.vector_map_widget import VectorMapWidget as MapWidget
-except Exception:
-    from ui.map_widget import MapWidget
+from ui.map_widget import MapWidget
 
 from ui.range_slider import RangeSlider
 from core.gpx_loader import load_gpx
@@ -140,7 +137,8 @@ class TrackPanel(QWidget):
         self.info_label = QLabel("")
         layout.addWidget(self.info_label)
         self.map = MapWidget()
-        layout.addWidget(self.map)
+        self.map.setMinimumHeight(400)
+        layout.addWidget(self.map, stretch=1)
 
         self.range_label = QLabel("Nessuna attività caricata")
         layout.addWidget(self.range_label)

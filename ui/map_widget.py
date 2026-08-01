@@ -1,238 +1,237 @@
-"""Fallback raster map renderer based on OpenStreetMap tiles.
+"""Folium-based map renderer for activity tracks.
 
-Used when the MapLibre/WebEngine renderer is not available. It draws the track
-as a colored polyline on top of a tile-based map.
-
-Called by:
-    - ``ui.track_panel.TrackPanel`` when the preferred renderer cannot load
-
-Consumes:
-    - ``core.analyzer.calculate_point_speed``
-    - ``core.analyzer.haversine_distance``
-    - ``core.colorizer.value_to_color``
+This widget replaces the MapLibre and Raster renderers with a Folium-based one,
+integrated via QWebEngineView.
 """
 
-import math
+from __future__ import annotations
+
+import json
 import os
-import requests
+import io
+import tempfile
+from pathlib import Path
+from typing import Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPen, QPixmap, QPainterPath, QPainter
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QGraphicsPixmapItem
+import folium
+from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
+from core.analyzer import calculate_point_speed, haversine_distance
 from core.colorizer import value_to_color
-from core.analyzer import calculate_point_speed
 
 
-class MapWidget(QGraphicsView):
-    """Raster activity map with OSM tiles and a track polyline."""
+class MapWidget(QWidget):
+    """Folium-backed track renderer."""
 
-    TILE_SIZE = 256
     viewChanged = pyqtSignal(dict)
 
-    def __init__(self):
-        """Create the graphics scene, tile cache and interaction settings.
-
-        Called by:
-            - ``TrackPanel`` as a fallback renderer
-        """
-        super().__init__()
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        self.zoom_factor = 1.15
-        self.zoom_level = 15
-        self.track_items = []
-        self.tile_items = []
-        self.cache_dir = "cache/osm"
-        self.show_points = False
-        os.makedirs(self.cache_dir, exist_ok=True)
-
-    def _emit_view_changed(self):
-        """Emit the current camera state to listeners."""
-        self.viewChanged.emit(self.get_view_state())
-
-    def get_view_state(self):
-        """Return the current scene center and zoom state.
-
-        Called by:
-            - ``MainWindow._copy_map_view``
-            - ``MainWindow._on_map_view_changed``
-
-        Returns:
-            dict: Camera state with center, scale and zoom.
-        """
-        center = self.mapToScene(self.viewport().rect().center())
-        transform = self.transform()
-        return {
-            "center": [round(center.x(), 3), round(center.y(), 3)],
-            "scale": round(transform.m11(), 4),
-            "zoom": self.zoom_level,
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ready = False
+        self._pending_draw = None
+        self._last_view_state: dict[str, Any] = {
+            "center": [44.58333, 10.73333],
+            "zoom": 14,
         }
 
-    def set_view_state(self, state):
-        """Apply a saved camera state to the raster map.
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        Called by:
-            - ``MainWindow._copy_map_view``
-            - ``MainWindow._on_map_view_changed``
+        self.view = QWebEngineView(self)
+        layout.addWidget(self.view)
+
+        self.view.loadFinished.connect(self._on_load_finished)
+        
+        # Initial empty map
+        self._update_map(None)
+
+    def _emit_view_changed(self, state):
+        self.viewChanged.emit(state)
+
+    def _on_load_finished(self, ok: bool):
+        self._ready = bool(ok)
+        if self._ready and self._pending_draw is not None:
+            track, color_mode, minimum, maximum = self._pending_draw
+            self._pending_draw = None
+            self.draw_track(track, color_mode, minimum, maximum)
+
+    def _get_html_template(self, m: folium.Map) -> str:
+        """Get the HTML content of the folium map with added JS for sync and dynamic drawing."""
+        data = io.BytesIO()
+        m.save(data, close_file=False)
+        html = data.getvalue().decode()
+        
+        # Inject script to catch view changes, expose sync API, and draw track dynamically
+        sync_script = """
+        <script>
+        function setupSync() {
+            var maps = [];
+            // Folium usually names the map variable 'map_<some_id>'
+            // We find it in the global scope
+            for (var key in window) {
+                if (key.startsWith('map_') && window[key] instanceof L.Map) {
+                    var map = window[key];
+                    
+                    window.leafletMap = map;
+                    
+                    map.on('moveend', function() {
+                        var center = map.getCenter();
+                        var state = {
+                            center: [center.lat, center.lng],
+                            zoom: map.getZoom()
+                        };
+                        if (window.python_bridge) {
+                            // If we had a QWebChannel, we'd use it here.
+                        }
+                    });
+                    
+                    window.getViewState = function() {
+                        var center = map.getCenter();
+                        return {
+                            center: [center.lat, center.lng],
+                            zoom: map.getZoom()
+                        };
+                    };
+                    
+                    window.setViewState = function(state) {
+                        if (state && state.center) {
+                            map.setView(state.center, state.zoom, {animate: false});
+                        }
+                    };
+                    
+                    // Dynamic drawing function
+                    window.drawTrack = function(points, fitBounds) {
+                        // Clear existing track layers
+                        if (window.trackLayers) {
+                            window.trackLayers.forEach(function(layer) {
+                                map.removeLayer(layer);
+                            });
+                        }
+                        window.trackLayers = [];
+
+                        if (!points || points.length < 2) return;
+
+                        // Canvas renderer for high-performance canvas path drawing
+                        var canvasRenderer = L.canvas();
+
+                        var currentGroup = [[points[0][0], points[0][1]]];
+                        var currentColor = points[0][2] || 'blue';
+
+                        for (var i = 1; i < points.length; i++) {
+                            var p = points[i];
+                            var lat = p[0];
+                            var lon = p[1];
+                            var color = p[2] || 'blue';
+
+                            if (color === currentColor) {
+                                currentGroup.push([lat, lon]);
+                            } else {
+                                var poly = L.polyline(currentGroup, {
+                                    color: currentColor,
+                                    weight: 5,
+                                    opacity: 0.8,
+                                    renderer: canvasRenderer
+                                });
+                                poly.addTo(map);
+                                window.trackLayers.push(poly);
+
+                                currentGroup = [[points[i-1][0], points[i-1][1]], [lat, lon]];
+                                currentColor = color;
+                            }
+                        }
+
+                        if (currentGroup.length >= 2) {
+                            var poly = L.polyline(currentGroup, {
+                                color: currentColor,
+                                weight: 5,
+                                opacity: 0.8,
+                                renderer: canvasRenderer
+                            });
+                            poly.addTo(map);
+                            window.trackLayers.push(poly);
+                        }
+
+                        if (fitBounds) {
+                            var lats = points.map(function(p) { return p[0]; });
+                            var lons = points.map(function(p) { return p[1]; });
+                            var minLat = Math.min.apply(null, lats);
+                            var maxLat = Math.max.apply(null, lats);
+                            var minLon = Math.min.apply(null, lons);
+                            var maxLon = Math.max.apply(null, lons);
+                            map.fitBounds([[minLat, minLon], [maxLat, maxLon]]);
+                        }
+                    };
+                    
+                    break;
+                }
+            }
+        }
+        setTimeout(setupSync, 500);
+        </script>
         """
-        if not isinstance(state, dict):
+        if "</body>" in html:
+            return html.replace("</body>", f"{sync_script}</body>")
+        
+        return html + sync_script
+
+    def _update_map(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
+        # Default center and zoom
+        center = [44.58333, 10.73333]
+        zoom = 14
+        
+        m = folium.Map(location=center, zoom_start=zoom, control_scale=True)
+        
+        # Genera l'HTML completo applicando i fix CSS e JS
+        content = self._get_html_template(m)
+        
+        # Carica l'HTML sbloccando i permessi internet con l'URL di base fittizio
+        self.view.setHtml(content, QUrl("http://localhost/"))
+
+    def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
+        if not self._ready:
+            self._pending_draw = (track, color_mode, minimum, maximum)
             return
-        center = state.get("center")
-        scale = state.get("scale")
-        if not isinstance(center, (list, tuple)) or len(center) != 2:
-            return
-        try:
-            cx = float(center[0])
-            cy = float(center[1])
-            scale = float(scale) if scale is not None else self.transform().m11()
-        except Exception:
+
+        points = getattr(track, "points", None) or []
+        if not points:
+            self.view.page().runJavaScript("if (window.drawTrack) window.drawTrack([], false);")
             return
 
-        self.resetTransform()
-        self.scale(scale, scale)
-        self.centerOn(cx, cy)
-        self._emit_view_changed()
+        points_js = []
+        for i in range(len(points)):
+            p = points[i]
+            color = "blue"
+            if color_mode != "Nessuna" and i < len(points) - 1:
+                p1 = p
+                p2 = points[i+1]
+                val = None
+                if color_mode == "Velocità":
+                    val = calculate_point_speed(p1, p2)
+                elif color_mode == "Pendenza":
+                    dist = haversine_distance(p1, p2)
+                    if dist > 0 and p1.altitude is not None and p2.altitude is not None:
+                        val = ((p2.altitude - p1.altitude) / dist) * 100
+                
+                color = "#808080"
+                if val is not None:
+                    color_q = value_to_color(val, minimum or 0, maximum or 0)
+                    color = color_q.name()
+            
+            points_js.append([p.latitude, p.longitude, color])
 
-    def wheelEvent(self, event):
-        """Zoom in or out around the mouse position.
+        js_data = json.dumps(points_js)
+        # We always fit bounds when drawing the track to make sure the view matches
+        self.view.page().runJavaScript(f"if (window.drawTrack) window.drawTrack({js_data}, true);")
 
-        Called by:
-            - Qt mouse wheel events
-        """
-        factor = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
-        self.scale(factor, factor)
-        self._emit_view_changed()
+    def get_view_state(self) -> dict[str, Any]:
+        return self._last_view_state
 
-    def mouseReleaseEvent(self, event):
-        """Notify listeners after a drag pan completes."""
-        super().mouseReleaseEvent(event)
-        self._emit_view_changed()
-
-    def geo_to_pixel(self, lat, lon, zoom):
-        """Project latitude/longitude to OSM tile pixels.
-
-        Called by:
-            - tile loading and track drawing routines
-        """
-        size = self.TILE_SIZE * (2 ** zoom)
-        return ((lon + 180) / 360 * size,
-                (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * size)
-
-    def clear_track(self):
-        """Remove all rendered track items from the scene."""
-        for item in self.track_items:
-            self.scene.removeItem(item)
-        self.track_items.clear()
-
-    def clear_tiles(self):
-        """Remove all tile items from the scene."""
-        for item in self.tile_items:
-            self.scene.removeItem(item)
-        self.tile_items.clear()
-
-    def add_tile(self, x, y, zoom, px, py):
-        """Load a single OSM tile and place it in the scene.
-
-        Called by:
-            - ``load_map_area``
-        """
-        try:
-            cache = os.path.join(self.cache_dir, f"{zoom}_{x}_{y}.png")
-            pixmap = QPixmap()
-            if os.path.exists(cache):
-                pixmap.load(cache)
-            else:
-                r = requests.get(f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png", headers={"User-Agent": "ActivityComparison/1.0"}, timeout=10)
-                r.raise_for_status()
-                with open(cache, "wb") as f:
-                    f.write(r.content)
-                pixmap.loadFromData(r.content)
-            if not pixmap.isNull():
-                item = QGraphicsPixmapItem(pixmap)
-                item.setPos(px, py)
-                item.setZValue(0)
-                self.scene.addItem(item)
-                self.tile_items.append(item)
-        except Exception:
-            pass
-
-    def load_map_area(self, lat, lon):
-        """Load a 7x7 tile area around a geographic center."""
-        self.clear_tiles()
-        cx, cy = self.geo_to_pixel(lat, lon, self.zoom_level)
-        tx, ty = int(cx / self.TILE_SIZE), int(cy / self.TILE_SIZE)
-        for x in range(tx - 3, tx + 4):
-            for y in range(ty - 3, ty + 4):
-                self.add_tile(x, y, self.zoom_level, x * self.TILE_SIZE - cx, y * self.TILE_SIZE - cy)
-
-    def calculate_zoom(self, min_lat, max_lat, min_lon, max_lon):
-        """Choose a zoom level from the track bounding box size."""
-        span = max(max_lat - min_lat, max_lon - min_lon)
-        if span > 2: return 8
-        if span > 1: return 10
-        if span > 0.5: return 12
-        if span > 0.1: return 13
-        if span > 0.03: return 14
-        if span > 0.005: return 15
-        return 16
-
-    def get_segment_value(self, previous, point, color_mode):
-        """Return the color metric for a track segment."""
-        if color_mode == "Velocità":
-            return calculate_point_speed(previous, point)
-        return None
-
-    def draw_track(self, track, color_mode="Nessuna", minimum=None, maximum=None):
-        """Render a track as colored line segments over the tile scene.
-
-        Called by:
-            - ``TrackPanel._render_visible_track``
-        """
-        old_transform = self.transform()
-        old_center = self.mapToScene(self.viewport().rect().center())
-        self.clear_track()
-        if len(track.points) < 2:
+    def set_view_state(self, state: Any):
+        if not self._ready:
             return
-
-        min_lat = min(p.latitude for p in track.points)
-        max_lat = max(p.latitude for p in track.points)
-        min_lon = min(p.longitude for p in track.points)
-        max_lon = max(p.longitude for p in track.points)
-        self.zoom_level = max(10, min(16, self.calculate_zoom(min_lat, max_lat, min_lon, max_lon)))
-
-        center_lat = (min_lat + max_lat) / 2
-        center_lon = (min_lon + max_lon) / 2
-        self.load_map_area(center_lat, center_lon)
-        ox, oy = self.geo_to_pixel(center_lat, center_lon, self.zoom_level)
-
-        for i in range(1, len(track.points)):
-            previous = track.points[i - 1]
-            point = track.points[i]
-            x1, y1 = self.geo_to_pixel(previous.latitude, previous.longitude, self.zoom_level)
-            x2, y2 = self.geo_to_pixel(point.latitude, point.longitude, self.zoom_level)
-
-            path = QPainterPath()
-            path.moveTo(x1 - ox, y1 - oy)
-            path.lineTo(x2 - ox, y2 - oy)
-
-            color = Qt.GlobalColor.gray
-            if color_mode == "Velocità":
-                value = self.get_segment_value(previous, point, color_mode)
-                if value is not None:
-                    color = value_to_color(value, minimum, maximum)
-
-            item = QGraphicsPathItem(path)
-            item.setPen(QPen(color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            item.setZValue(10)
-            self.scene.addItem(item)
-            self.track_items.append(item)
-
-        self.setTransform(old_transform)
-        self.centerOn(old_center)
-        self._emit_view_changed()
+        
+        js_state = json.dumps(state)
+        self.view.page().runJavaScript(f"if (window.setViewState) window.setViewState({js_state});")
+        self._last_view_state = state

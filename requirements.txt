@@ -5,3 +5,5 @@ numpy
 fitparse
 gpxpy
 matplotlib
+folium
+PyQt6-WebEngine

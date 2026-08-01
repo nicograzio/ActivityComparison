@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         map_widget = getattr(panel, "map", None)
         return bool(
             map_widget is not None
-            and hasattr(map_widget, "viewChanged")
+            # and hasattr(map_widget, "viewChanged") # Folium sync is limited
             and hasattr(map_widget, "get_view_state")
             and hasattr(map_widget, "set_view_state")
         )
