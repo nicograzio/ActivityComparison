@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
         self.left_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.left_panel, mode)
         )
+        
+        # Connect graph hover signals to map synchronization
+        self.left_graph.point_hovered.connect(
+            lambda idx, x, y: self._on_graph_point_hovered(self.left_panel, idx, x, y)
+        )
 
         self.right_panel.visible_track_changed.connect(
             lambda track, graph=self.right_graph: self._update_graph(graph, track)
@@ -92,6 +97,11 @@ class MainWindow(QMainWindow):
         )
         self.right_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.right_panel, mode)
+        )
+        
+        # Connect graph hover signals to map synchronization
+        self.right_graph.point_hovered.connect(
+            lambda idx, x, y: self._on_graph_point_hovered(self.right_panel, idx, x, y)
         )
 
         self.left_panel.color_mode.currentTextChanged.connect(
@@ -520,3 +530,21 @@ class MainWindow(QMainWindow):
         self._graphs_visible = bool(visible)
         self.left_graph.setVisible(visible)
         self.right_graph.setVisible(visible)
+    
+    def _on_graph_point_hovered(self, source_panel, point_index, x_value, y_value):
+        """Handle graph point hover events and update the corresponding map.
+        
+        Called by:
+            - ``GraphPanel.point_hovered`` signal
+        
+        Args:
+            source_panel: The panel that emitted the hover event
+            point_index: Index of the hovered point in the track
+            x_value: X value (time) of the hovered point
+            y_value: Y value (speed) of the hovered point
+        """
+        if not hasattr(source_panel, "map") or source_panel.map is None:
+            return
+        
+        # Update the map with the hovered point marker
+        source_panel.map.set_hovered_point(point_index)

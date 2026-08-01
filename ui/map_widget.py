@@ -35,6 +35,10 @@ class MapWidget(QWidget):
             "center": [44.58333, 10.73333],
             "zoom": 14,
         }
+        
+        # Current hovered point for map synchronization
+        self._current_hovered_point = None
+        self._points_list = []  # Store points for index lookup
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -164,6 +168,32 @@ class MapWidget(QWidget):
                         }
                     };
                     
+                    // Function to draw/update hovered point marker
+                    window.drawHoveredPoint = function(pointData) {
+                        // Remove existing hovered marker
+                        if (window.hoveredMarker) {
+                            map.removeLayer(window.hoveredMarker);
+                        }
+                        
+                        // Add new marker with red circle
+                        window.hoveredMarker = L.circleMarker([pointData.lat, pointData.lng], {
+                            radius: 8,
+                            fillColor: 'red',
+                            color: 'darkred',
+                            weight: 2,
+                            opacity: 1,
+                            fillOpacity: 0.8
+                        }).addTo(map);
+                    };
+                    
+                    // Function to clear hovered point marker
+                    window.clearHoveredPoint = function() {
+                        if (window.hoveredMarker) {
+                            map.removeLayer(window.hoveredMarker);
+                            window.hoveredMarker = null;
+                        }
+                    };
+                    
                     break;
                 }
             }
@@ -197,8 +227,12 @@ class MapWidget(QWidget):
         points = getattr(track, "points", None) or []
         if not points:
             self.view.page().runJavaScript("if (window.drawTrack) window.drawTrack([], false);")
+            self._points_list = []
             return
 
+        # Store points for later reference
+        self._points_list = points
+        
         points_js = []
         for i in range(len(points)):
             p = points[i]
@@ -235,3 +269,28 @@ class MapWidget(QWidget):
         js_state = json.dumps(state)
         self.view.page().runJavaScript(f"if (window.setViewState) window.setViewState({js_state});")
         self._last_view_state = state
+    
+    def set_hovered_point(self, point_index: int):
+        """Update the hovered point marker on the map.
+        
+        Called by:
+            - ``MainWindow`` when a point is hovered on the graph
+        
+        Args:
+            point_index: Index of the hovered point in the track
+        """
+        if point_index < 0 or point_index >= len(self._points_list):
+            self._current_hovered_point = None
+            self.view.page().runJavaScript("if (window.clearHoveredPoint) window.clearHoveredPoint();")
+            return
+        
+        self._current_hovered_point = point_index
+        point = self._points_list[point_index]
+        
+        # Send point coordinates to map for marker display
+        point_data = json.dumps({
+            "lat": point.latitude,
+            "lng": point.longitude,
+            "index": point_index
+        })
+        self.view.page().runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")
