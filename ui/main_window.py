@@ -471,7 +471,7 @@ class MainWindow(QMainWindow):
             graph.clear_graph()
             return
 
-        graph.setVisible(True)
+        graph.setVisible(self._graphs_visible)
         graph.set_series(times, speeds, "Velocità")
 
     def _invert_activities(self):
