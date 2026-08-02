@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel, ScaleMode
 from ui.graph_panel import GraphPanel
-from core.analyzer import calculate_speed_series
+from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self._syncing_maps = False
         self._sync_scales_enabled = False
         self._syncing_scales = False
+        self._syncing_x_axis = False
         self._graphs_visible = True
         # Store the original scale settings when sync is enabled for restoration when disabled
         self._left_sync_backup = None
@@ -79,7 +80,10 @@ class MainWindow(QMainWindow):
         self.left_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.left_panel, mode)
         )
-        
+        self.left_panel.x_axis_mode_changed.connect(
+            lambda mode: self._on_x_axis_mode_changed(self.left_panel, mode)
+        )
+
         # Connect graph hover signals to map synchronization
         self.left_graph.point_hovered.connect(
             lambda idx, x, y: self._on_graph_point_hovered(self.left_panel, idx, x, y)
@@ -98,7 +102,10 @@ class MainWindow(QMainWindow):
         self.right_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.right_panel, mode)
         )
-        
+        self.right_panel.x_axis_mode_changed.connect(
+            lambda mode: self._on_x_axis_mode_changed(self.right_panel, mode)
+        )
+
         # Connect graph hover signals to map synchronization
         self.right_graph.point_hovered.connect(
             lambda idx, x, y: self._on_graph_point_hovered(self.right_panel, idx, x, y)
@@ -425,6 +432,17 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_scales = False
 
+    def _on_x_axis_mode_changed(self, panel, mode):
+        """Sync X axis mode between panels."""
+        if self._syncing_x_axis:
+            return
+        self._syncing_x_axis = True
+        try:
+            target_panel = self.right_panel if panel is self.left_panel else self.left_panel
+            target_panel.x_axis_combo.setCurrentText(mode)
+        finally:
+            self._syncing_x_axis = False
+
     def _on_color_mode_changed(self, panel, mode):
         """Handle color mode (metric) changes."""
         if not self._sync_scales_enabled or self._syncing_scales:
@@ -466,13 +484,33 @@ class MainWindow(QMainWindow):
             graph.clear_graph()
             return
 
-        times, speeds = calculate_speed_series(track)
-        if not times or not speeds:
+        # Determine which panel this graph belongs to
+        panel = self.left_panel if graph is self.left_graph else self.right_panel
+        
+        # Get real offsets from the track
+        first_ts = None
+        start_dist = 0.0
+        if panel.track and panel.track.points:
+            first_ts = panel.track.points[0].timestamp
+            
+            # Get the distance offset directly from the trimmed track
+            if hasattr(track, 'start_distance_m'):
+                start_dist = track.start_distance_m
+
+        x_mode = panel.x_axis_combo.currentText()
+        x_values, speeds = calculate_track_series(
+            track, 
+            x_axis_mode=x_mode, 
+            first_timestamp=first_ts, 
+            start_distance_m=start_dist
+        )
+        
+        if not x_values or not speeds:
             graph.clear_graph()
             return
 
         graph.setVisible(self._graphs_visible)
-        graph.set_series(times, speeds, "Velocità")
+        graph.set_series(x_values, speeds, "Velocità", x_mode=x_mode)
 
     def _invert_activities(self):
         """Swap the left and right activities, graphs and splitters.

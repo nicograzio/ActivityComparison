@@ -89,63 +89,66 @@ def calculate_point_speed(previous, current):
         return None
 
 
-def calculate_speed_series(track):
-    """Build the time/speed series used by the graph widgets.
-
-    Called by:
-        - ``ui.main_window.MainWindow._update_graph``
+def calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=None, start_distance_m=0.0):
+    """Build the series data for the graph widget.
 
     Args:
         track: Track to convert.
+        x_axis_mode: "Tempo" or "Distanza".
+        first_timestamp: Original start timestamp of the full track to calculate real time offset.
+        start_distance_m: Original start distance offset in meters.
 
     Returns:
-        tuple[list[float], list[float]]: Time samples and speed samples.
+        tuple[list[float], list[float]]: X-axis samples and speed samples.
     """
     points = getattr(track, "points", [])
     if not points:
         return [], []
 
-    times = [0.0]
+    x_values = []
     speeds = []
 
-    # Try to get the speed of the first point if recorded
-    first_point_speed = getattr(points[0], "speed", None)
-    if isinstance(first_point_speed, (int, float)) and first_point_speed >= 0:
-        speeds.append(float(first_point_speed * 3.6))
-    else:
-        # Placeholder, will be backfilled with the first segment speed if possible
-        speeds.append(None)
+    # Calculate distance profile for the current segment to handle relative distances
+    segment_distances, _ = track_distance_profile(track)
 
-    first_timestamp = getattr(points[0], "timestamp", None)
-
-    for index in range(1, len(points)):
-        previous = points[index - 1]
+    for index in range(len(points)):
         current = points[index]
+        
+        # Speed calculation
+        if index == 0:
+            if len(points) > 1:
+                speed = calculate_point_speed(points[0], points[1])
+            else:
+                speed = getattr(current, "speed", 0.0)
+                if speed is not None: speed *= 3.6
+        else:
+            speed = calculate_point_speed(points[index-1], current)
+        
+        speeds.append(float(speed) if speed is not None else 0.0)
 
-        speed = calculate_point_speed(previous, current)
-        speeds.append(0.0 if speed is None else float(speed))
+        # X-axis value calculation
+        if x_axis_mode == "Distanza":
+            # Real distance = offset + distance within this segment
+            x_values.append((start_distance_m + segment_distances[index]) / 1000.0)
+        else:
+            # Time calculation
+            current_timestamp = getattr(current, "timestamp", None)
+            if first_timestamp is not None and current_timestamp is not None:
+                try:
+                    elapsed = (current_timestamp - first_timestamp).total_seconds()
+                    x_values.append(float(elapsed))
+                except Exception:
+                    x_values.append(float(index))
+            else:
+                x_values.append(float(index))
 
-        # Backfill first point speed if it was None
-        if index == 1 and speeds[0] is None:
-            speeds[0] = speeds[1]
+    return x_values, speeds
 
-        current_timestamp = getattr(current, "timestamp", None)
 
-        if first_timestamp is not None and current_timestamp is not None:
-            try:
-                elapsed = (current_timestamp - first_timestamp).total_seconds()
-                times.append(float(elapsed) if elapsed >= 0 else float(index))
-                continue
-            except Exception:
-                pass
-
-        times.append(float(index))
-
-    # Safety check if only 1 point exists and speed is still None
-    if speeds[0] is None:
-        speeds[0] = 0.0
-
-    return times, speeds
+def calculate_speed_series(track):
+    """Build the time/speed series used by the graph widgets (legacy wrapper)."""
+    first_ts = track.points[0].timestamp if track.points else None
+    return calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=first_ts)
 
 
 def calculate_speed_range(track):
@@ -313,7 +316,7 @@ def trim_track_by_distance(track, start_distance_m, end_distance_m):
     Returns:
         Track: Trimmed track.
     """
-    trimmed = Track(track.name)
+    trimmed = Track(track.name, start_distance_m=start_distance_m)
     points = track.points
 
     if len(points) < 2:

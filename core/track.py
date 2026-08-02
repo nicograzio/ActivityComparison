@@ -49,14 +49,16 @@ class Track:
         add_point: append a sample to the track.
     """
 
-    def __init__(self, name):
+    def __init__(self, name, start_distance_m=0.0):
         """Create an empty track container.
 
         Args:
             name: Display name, usually the source file path.
+            start_distance_m: Distance offset in meters from the start of the full track.
         """
         self.name = name
         self.points = []
+        self.start_distance_m = start_distance_m
 
     def add_point(self, point):
         """Append a sample to the track.

@@ -20,6 +20,30 @@ pg.setConfigOption('background', '#1e1e1e')  # Dark background to match modern U
 pg.setConfigOption('foreground', '#dcdcdc')  # Light foreground for text/axes
 
 
+def format_time_axis(seconds):
+    """Format seconds into HH:MM:SS, MM:SS or SS."""
+    seconds = int(round(seconds))
+    if seconds < 0:
+        return f"-{format_time_axis(-seconds)}"
+    
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    elif minutes > 0:
+        return f"{minutes:02d}:{secs:02d}"
+    else:
+        return f"{secs:02d}s"
+
+
+class TimeAxisItem(pg.AxisItem):
+    """Custom axis item to display formatted time."""
+    def tickStrings(self, values, scale, spacing):
+        return [format_time_axis(value) for value in values]
+
+
 class GraphPanel(QWidget):
     """Render a time series for one activity using PyQtGraph.
 
@@ -35,13 +59,17 @@ class GraphPanel(QWidget):
         super().__init__()
         self._time = np.array([])
         self._values = np.array([])
+        self._x_mode = "Tempo"
         self.setMinimumHeight(220)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create PlotWidget
-        self.plot_widget = pg.PlotWidget()
+        # Create PlotWidget with custom X axis
+        self.time_axis = TimeAxisItem(orientation='bottom')
+        self.dist_axis = pg.AxisItem(orientation='bottom')
+        
+        self.plot_widget = pg.PlotWidget(axisItems={'bottom': self.time_axis})
         self.plot_widget.setMinimumSize(QSize(400, 180))
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.getAxis('bottom').setLabel("Tempo")
@@ -74,23 +102,33 @@ class GraphPanel(QWidget):
         # Connect mouse motion event
         self.proxy = pg.SignalProxy(self.plot_item.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_move)
 
-    def set_series(self, time_values, data_values, label="Valore"):
+    def set_series(self, x_values, data_values, label="Valore", x_mode="Tempo"):
         """Replace the current plot data and redraw the graph.
 
         Called by:
             - ``MainWindow._update_graph``
 
         Args:
-            time_values: X axis samples.
+            x_values: X axis samples.
             data_values: Y axis samples.
             label: Y axis label to display.
+            x_mode: "Tempo" or "Distanza".
         """
-        self._time = np.array(time_values)
+        self._time = np.array(x_values)
         self._values = np.array(data_values)
+        self._x_mode = x_mode
 
         if len(self._time) == 0:
             self.clear_graph()
             return
+
+        # Update X axis type and label
+        if x_mode == "Tempo":
+            self.plot_item.setAxisItems({'bottom': self.time_axis})
+            self.plot_widget.getAxis('bottom').setLabel("Tempo")
+        else:
+            self.plot_item.setAxisItems({'bottom': self.dist_axis})
+            self.plot_widget.getAxis('bottom').setLabel("Distanza", units="km")
 
         self.curve.setData(self._time, self._values)
         self.plot_item.getAxis('left').setLabel(label)
@@ -124,7 +162,8 @@ class GraphPanel(QWidget):
             
             # Update label
             y_label = self.plot_item.getAxis('left').labelText
-            self.label.setText(f"{y_label}: {y_value:.2f}")
+            x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
+            self.label.setText(f"X: {x_formatted}\n{y_label}: {y_value:.2f}")
             self.label.setPos(x_value, y_value)
             self.label.show()
             

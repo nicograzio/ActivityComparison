@@ -34,6 +34,35 @@ from core.analyzer import (
 )
 from core.track_capabilities import TrackCapabilities
 
+def _format_time_duration(seconds):
+    """Format a duration in seconds to HH:MM:SS, MM:SS, or SS format.
+    
+    Args:
+        seconds: Duration in seconds (int or float).
+    
+    Returns:
+        str: Formatted time string.
+    """
+    if seconds is None:
+        return "0"
+    
+    total_seconds = int(round(seconds))
+    
+    if total_seconds < 60:
+        # Less than 1 minute: SS format
+        return f"{total_seconds}s"
+    elif total_seconds < 3600:
+        # Less than 1 hour: MM:SS format
+        minutes = total_seconds // 60
+        secs = total_seconds % 60
+        return f"{minutes}:{secs:02d}"
+    else:
+        # 1 hour or more: HH:MM:SS format
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+
 class ScaleMode(Enum):
     """
     Defines how the color scale is managed.
@@ -63,6 +92,7 @@ class TrackPanel(QWidget):
 
     activity_loaded = pyqtSignal(object)
     visible_track_changed = pyqtSignal(object)
+    x_axis_mode_changed = pyqtSignal(str)
     manual_limits_changed = pyqtSignal(float, float)
     scale_mode_changed = pyqtSignal(object)
 
@@ -140,8 +170,20 @@ class TrackPanel(QWidget):
         self.map.setMinimumHeight(400)
         layout.addWidget(self.map, stretch=1)
 
+        range_layout = QHBoxLayout()
         self.range_label = QLabel("Nessuna attività caricata")
-        layout.addWidget(self.range_label)
+        range_layout.addWidget(self.range_label)
+        range_layout.addStretch()
+        
+        range_layout.addWidget(QLabel("Asse X:"))
+        self.x_axis_combo = QComboBox()
+        self.x_axis_combo.addItems(["Tempo", "Distanza"])
+        self.x_axis_combo.setEnabled(False)
+        self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
+        range_layout.addWidget(self.x_axis_combo)
+        
+        layout.addLayout(range_layout)
+        
         self.range_slider = RangeSlider()
         self.range_slider.setEnabled(False)
         self.range_slider.valuesChanged.connect(self.update_trim)
@@ -345,6 +387,11 @@ class TrackPanel(QWidget):
             return
         self.apply_scale_mode(ScaleMode.MANUAL, minimum, maximum)
 
+    def _on_x_axis_changed(self, mode):
+        """Handle X axis mode change."""
+        self.x_axis_mode_changed.emit(mode)
+        self._render_visible_track()
+
     def refresh_visible_track(self):
         """Force a redraw of the visible portion of the track.
 
@@ -408,41 +455,85 @@ class TrackPanel(QWidget):
             self.manual_limits_changed.emit(*manual_limits)
 
     def update_trim(self, start, end):
-        """Apply the slider interval and refresh the rendered track.
+         """Apply the slider interval and refresh the rendered track.
 
-        Called by:
-            - ``RangeSlider.valuesChanged``
+         Called by:
+             - ``RangeSlider.valuesChanged``
 
-        Args:
-            start: Lower distance bound.
-            end: Upper distance bound.
-        """
-        if not self.track:
-            return
-        self.visible_start_m = float(min(start, end))
-        self.visible_end_m = float(max(start, end))
-        start_km = self.visible_start_m / 1000
-        end_km = self.visible_end_m / 1000
-        total_km = self.full_distance_m / 1000
+         Args:
+             start: Lower distance bound.
+             end: Upper distance bound.
+         """
+         if not self.track:
+             return
+         self.visible_start_m = float(min(start, end))
+         self.visible_end_m = float(max(start, end))
+         start_km = self.visible_start_m / 1000
+         end_km = self.visible_end_m / 1000
+         total_km = self.full_distance_m / 1000
 
-        distances, _ = track_distance_profile(self.track)
-        start_point = 0
-        for i, distance in enumerate(distances):
-            if distance >= self.visible_start_m:
-                start_point = i if distance == self.visible_start_m or i == 0 else i - 1
-                break
+         distances, _ = track_distance_profile(self.track)
+         start_point = 0
+         for i, distance in enumerate(distances):
+             if distance >= self.visible_start_m:
+                 start_point = i if distance == self.visible_start_m or i == 0 else i - 1
+                 break
 
-        end_point = len(distances) - 1
-        for i, distance in enumerate(distances):
-            if distance > self.visible_end_m:
-                end_point = max(0, i - 1)
-                break
+         end_point = len(distances) - 1
+         for i, distance in enumerate(distances):
+             if distance > self.visible_end_m:
+                 end_point = max(0, i - 1)
+                 break
 
-        self.range_label.setText(
-            f"Visualizzazione: {start_km:.2f} km → {end_km:.2f} km / {total_km:.2f} km "
-            f"(da punto {start_point + 1} a punto {end_point + 1})"
-        )
-        self._render_visible_track()
+         # Calculate time values
+         time_start_str = "0"
+         time_end_str = "0"
+         time_total_str = "0"
+         
+         if self.track.points:
+             # Get first and last timestamps from the full track
+             first_timestamp = self.track.points[0].timestamp
+             last_timestamp = self.track.points[-1].timestamp
+             
+             # Get timestamps at the visible range boundaries
+             start_timestamp = None
+             end_timestamp = None
+             
+             if start_point < len(self.track.points):
+                 start_timestamp = self.track.points[start_point].timestamp
+             if end_point < len(self.track.points):
+                 end_timestamp = self.track.points[end_point].timestamp
+             
+             # Calculate total duration
+             if first_timestamp is not None and last_timestamp is not None:
+                 try:
+                     total_seconds = (last_timestamp - first_timestamp).total_seconds()
+                     time_total_str = _format_time_duration(total_seconds)
+                 except Exception:
+                     time_total_str = "0"
+             
+             # Calculate visible range start time
+             if first_timestamp is not None and start_timestamp is not None:
+                 try:
+                     start_seconds = (start_timestamp - first_timestamp).total_seconds()
+                     time_start_str = _format_time_duration(start_seconds)
+                 except Exception:
+                     time_start_str = "0"
+             
+             # Calculate visible range end time
+             if first_timestamp is not None and end_timestamp is not None:
+                 try:
+                     end_seconds = (end_timestamp - first_timestamp).total_seconds()
+                     time_end_str = _format_time_duration(end_seconds)
+                 except Exception:
+                     time_end_str = "0"
+
+         self.range_label.setText(
+             f"Visualizzazione: {start_km:.2f} km → {end_km:.2f} km / {total_km:.2f} km | "
+             f"{time_start_str} → {time_end_str} / {time_total_str} | "
+             f"da punto {start_point + 1} a punto {end_point + 1}"
+         )
+         self._render_visible_track()
 
     def update_scale(self, *_):
         """Refresh the current rendering after a mode change.
@@ -557,6 +648,7 @@ class TrackPanel(QWidget):
             self.file_label.setText(Path(filename).name)
             self.show_summary()
             self.color_mode.setEnabled(True)
+            self.x_axis_combo.setEnabled(True)
             self.scale_mode_button.setEnabled(True)
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
