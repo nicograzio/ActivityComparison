@@ -424,7 +424,24 @@ class TrackPanel(QWidget):
         start_km = self.visible_start_m / 1000
         end_km = self.visible_end_m / 1000
         total_km = self.full_distance_m / 1000
-        self.range_label.setText(f"Visualizzazione: {start_km:.2f} km → {end_km:.2f} km / {total_km:.2f} km")
+
+        distances, _ = track_distance_profile(self.track)
+        start_point = 0
+        for i, distance in enumerate(distances):
+            if distance >= self.visible_start_m:
+                start_point = i if distance == self.visible_start_m or i == 0 else i - 1
+                break
+
+        end_point = len(distances) - 1
+        for i, distance in enumerate(distances):
+            if distance > self.visible_end_m:
+                end_point = max(0, i - 1)
+                break
+
+        self.range_label.setText(
+            f"Visualizzazione: {start_km:.2f} km → {end_km:.2f} km / {total_km:.2f} km "
+            f"(da punto {start_point + 1} a punto {end_point + 1})"
+        )
         self._render_visible_track()
 
     def update_scale(self, *_):
@@ -442,7 +459,7 @@ class TrackPanel(QWidget):
             - ``import_file`` after loading a new track
         """
         summary = self.capabilities.summary
-        self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else v}" for k, v in summary.items()))
+        self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else ('x' if v is False else v)}" for k, v in summary.items()))
 
     def _apply_mode_state(self, mode: "ScaleMode", manual_min=None, manual_max=None):
         """Apply the internal state, field editability and caption for a mode.
