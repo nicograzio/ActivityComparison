@@ -117,20 +117,23 @@ class MapWidget(QWidget):
 
                         if (!points || points.length < 2) return;
 
+                        
                         // Canvas renderer for high-performance canvas path drawing
                         var canvasRenderer = L.canvas();
 
-                        var currentGroup = [[points[0][0], points[0][1]]];
+                        if (points.length < 2) return;
+
+                        var currentGroup = [[points[0][0], points[0][1]], [points[1][0], points[1][1]]];
                         var currentColor = points[0][2] || 'blue';
 
-                        for (var i = 1; i < points.length; i++) {
-                            var p = points[i];
-                            var lat = p[0];
-                            var lon = p[1];
-                            var color = p[2] || 'blue';
+                        for (var i = 1; i < points.length - 1; i++) {
+                            var nextPoint = points[i + 1];
+                            var nextColor = points[i][2] || 'blue';
+                            var nextLat = nextPoint[0];
+                            var nextLon = nextPoint[1];
 
-                            if (color === currentColor) {
-                                currentGroup.push([lat, lon]);
+                            if (nextColor === currentColor) {
+                                currentGroup.push([nextLat, nextLon]);
                             } else {
                                 var poly = L.polyline(currentGroup, {
                                     color: currentColor,
@@ -141,8 +144,8 @@ class MapWidget(QWidget):
                                 poly.addTo(map);
                                 window.trackLayers.push(poly);
 
-                                currentGroup = [[points[i-1][0], points[i-1][1]], [lat, lon]];
-                                currentColor = color;
+                                currentGroup = [[points[i][0], points[i][1]], [nextLat, nextLon]];
+                                currentColor = nextColor;
                             }
                         }
 
@@ -156,6 +159,26 @@ class MapWidget(QWidget):
                             poly.addTo(map);
                             window.trackLayers.push(poly);
                         }
+
+                        var startMarker = L.circleMarker([points[0][0], points[0][1]], {
+                            radius: 8,
+                            fillColor: '#34A853',
+                            color: '#ffffff',
+                            weight: 2,
+                            opacity: 1,
+                            fillOpacity: 1
+                        }).addTo(map);
+                        window.trackLayers.push(startMarker);
+
+                        var endMarker = L.circleMarker([points[points.length - 1][0], points[points.length - 1][1]], {
+                            radius: 8,
+                            fillColor: '#EA4335',
+                            color: '#ffffff',
+                            weight: 2,
+                            opacity: 1,
+                            fillOpacity: 1
+                        }).addTo(map);
+                        window.trackLayers.push(endMarker);
 
                         if (fitBounds) {
                             var lats = points.map(function(p) { return p[0]; });
