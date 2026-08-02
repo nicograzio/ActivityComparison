@@ -106,7 +106,16 @@ def calculate_speed_series(track):
         return [], []
 
     times = [0.0]
-    speeds = [0.0]
+    speeds = []
+
+    # Try to get the speed of the first point if recorded
+    first_point_speed = getattr(points[0], "speed", None)
+    if isinstance(first_point_speed, (int, float)) and first_point_speed >= 0:
+        speeds.append(float(first_point_speed * 3.6))
+    else:
+        # Placeholder, will be backfilled with the first segment speed if possible
+        speeds.append(None)
+
     first_timestamp = getattr(points[0], "timestamp", None)
 
     for index in range(1, len(points)):
@@ -116,7 +125,12 @@ def calculate_speed_series(track):
         speed = calculate_point_speed(previous, current)
         speeds.append(0.0 if speed is None else float(speed))
 
+        # Backfill first point speed if it was None
+        if index == 1 and speeds[0] is None:
+            speeds[0] = speeds[1]
+
         current_timestamp = getattr(current, "timestamp", None)
+
         if first_timestamp is not None and current_timestamp is not None:
             try:
                 elapsed = (current_timestamp - first_timestamp).total_seconds()
@@ -126,6 +140,10 @@ def calculate_speed_series(track):
                 pass
 
         times.append(float(index))
+
+    # Safety check if only 1 point exists and speed is still None
+    if speeds[0] is None:
+        speeds[0] = 0.0
 
     return times, speeds
 
