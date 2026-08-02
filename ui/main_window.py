@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         # Store the original scale settings when sync is enabled for restoration when disabled
         self._left_sync_backup = None
         self._right_sync_backup = None
+        self._fullscreen_mode = None
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -126,18 +127,15 @@ class MainWindow(QMainWindow):
         self.controls_panel.invert_activities_requested.connect(self._invert_activities)
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
+        self.controls_panel.left_fullscreen_toggled.connect(self._on_left_fullscreen_toggled)
+        self.controls_panel.right_fullscreen_toggled.connect(self._on_right_fullscreen_toggled)
 
         self._connect_map_sync(self.left_panel, self.right_panel)
 
-        maps_splitter = QSplitter(Qt.Orientation.Horizontal)
-        maps_splitter.addWidget(self.left_splitter)
-        maps_splitter.addWidget(self.controls_panel)
-        maps_splitter.addWidget(self.right_splitter)
-        maps_splitter.setStretchFactor(0, 1)
-        maps_splitter.setStretchFactor(1, 0)
-        maps_splitter.setStretchFactor(2, 1)
+        main_layout.addWidget(self.left_splitter, 1)
+        main_layout.addWidget(self.controls_panel)
+        main_layout.addWidget(self.right_splitter, 1)
 
-        main_layout.addWidget(maps_splitter)
         central.setLayout(main_layout)
         self.setCentralWidget(central)
 
@@ -544,17 +542,53 @@ class MainWindow(QMainWindow):
 
     def _center_traces(self):
         """Recompute the visible section for both activities.
-
+ 
         Called by:
             - ``ComparisonControlsPanel.center_traces_requested``
         """
         self.left_panel.refresh_visible_track()
         self.right_panel.refresh_visible_track()
-
+ 
+    def _apply_fullscreen_mode(self, mode):
+        """Show one side in fullscreen and hide the other."""
+        self._fullscreen_mode = mode
+        if mode == "left":
+            self.left_splitter.show()
+            self.right_splitter.hide()
+        elif mode == "right":
+            self.left_splitter.hide()
+            self.right_splitter.show()
+        else:
+            self.left_splitter.show()
+            self.right_splitter.show()
+ 
+        self.controls_panel.set_fullscreen_state(mode)
+ 
+    def _on_left_fullscreen_toggled(self, enabled: bool):
+        """Handle left-side fullscreen requests."""
+        if enabled:
+            self._apply_fullscreen_mode("left")
+        elif self._fullscreen_mode == "left":
+            self._apply_fullscreen_mode(None)
+ 
+    def _on_right_fullscreen_toggled(self, enabled: bool):
+        """Handle right-side fullscreen requests."""
+        if enabled:
+            self._apply_fullscreen_mode("right")
+        elif self._fullscreen_mode == "right":
+            self._apply_fullscreen_mode(None)
+ 
     def _check_sync_controls_availability(self):
         """Enable sync controls only if both tracks are loaded."""
         both_loaded = self.left_panel.track is not None and self.right_panel.track is not None
+        left_loaded = self.left_panel.track is not None
+        right_loaded = self.right_panel.track is not None
         self.controls_panel.set_sync_controls_enabled(both_loaded)
+        self.controls_panel.set_fullscreen_buttons_enabled(left_loaded, right_loaded)
+        if self._fullscreen_mode == "left" and not left_loaded:
+            self._apply_fullscreen_mode(None)
+        if self._fullscreen_mode == "right" and not right_loaded:
+            self._apply_fullscreen_mode(None)
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.

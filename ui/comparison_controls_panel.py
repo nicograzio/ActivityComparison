@@ -12,6 +12,8 @@ Signals emitted:
     - invert_activities_requested
     - center_traces_requested
     - toggle_graphs_requested
+    - left_fullscreen_toggled
+    - right_fullscreen_toggled
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -26,6 +28,8 @@ class ComparisonControlsPanel(QWidget):
     invert_activities_requested = pyqtSignal()
     center_traces_requested = pyqtSignal()
     toggle_graphs_requested = pyqtSignal(bool)
+    left_fullscreen_toggled = pyqtSignal(bool)
+    right_fullscreen_toggled = pyqtSignal(bool)
 
     def __init__(self):
         """Create the control column and wire button signals.
@@ -36,6 +40,9 @@ class ComparisonControlsPanel(QWidget):
         super().__init__()
         self.setObjectName("comparisonControlsPanel")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+        self._sync_controls_enabled = False
+        self._fullscreen_mode = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -59,6 +66,24 @@ class ComparisonControlsPanel(QWidget):
         )
         self.sync_scales_button.toggled.connect(self.sync_scales_toggled.emit)
         layout.addWidget(self.sync_scales_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.left_fullscreen_button = self._build_button(
+            "➡️",
+            "Schermo intero sinistra",
+            "Nascondi il pannello di destra e porta a schermo intero la traccia sinistra",
+            checkable=True,
+        )
+        self.left_fullscreen_button.toggled.connect(self.left_fullscreen_toggled.emit)
+        layout.addWidget(self.left_fullscreen_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.right_fullscreen_button = self._build_button(
+            "⬅️",
+            "Schermo intero destra",
+            "Nascondi il pannello di sinistra e porta a schermo intero la traccia destra",
+            checkable=True,
+        )
+        self.right_fullscreen_button.toggled.connect(self.right_fullscreen_toggled.emit)
+        layout.addWidget(self.right_fullscreen_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.invert_button = self._build_button(
             "🔄",
@@ -89,6 +114,8 @@ class ComparisonControlsPanel(QWidget):
         layout.addWidget(self.graphs_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.set_sync_controls_enabled(False)
+        self.set_fullscreen_buttons_enabled(False, False)
+        self.set_fullscreen_state(None)
 
         layout.addStretch(1)
 
@@ -125,10 +152,38 @@ class ComparisonControlsPanel(QWidget):
         Called by:
             - ``MainWindow`` when tracks are loaded/unloaded
         """
-        self.sync_maps_button.setEnabled(enabled)
-        self.sync_scales_button.setEnabled(enabled)
-        self.invert_button.setEnabled(enabled)
-        self.center_button.setEnabled(enabled)
+        self._sync_controls_enabled = enabled
+        self.sync_maps_button.setEnabled(enabled and self._fullscreen_mode is None)
+        self.sync_scales_button.setEnabled(enabled and self._fullscreen_mode is None)
+        self.invert_button.setEnabled(enabled and self._fullscreen_mode is None)
+        self.center_button.setEnabled(enabled and self._fullscreen_mode is None)
+
+    def set_fullscreen_buttons_enabled(self, left_enabled: bool, right_enabled: bool):
+        """Enable or disable the fullscreen controls for each side."""
+        self.left_fullscreen_button.setEnabled(left_enabled)
+        self.right_fullscreen_button.setEnabled(right_enabled)
+
+    def set_fullscreen_state(self, mode):
+        """Set fullscreen mode and disable unrelated controls."""
+        self._fullscreen_mode = mode
+        is_fullscreen = mode is not None
+
+        self.sync_maps_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.sync_scales_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.invert_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.center_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+
+        self.left_fullscreen_button.blockSignals(True)
+        try:
+            self.left_fullscreen_button.setChecked(mode == "left")
+        finally:
+            self.left_fullscreen_button.blockSignals(False)
+
+        self.right_fullscreen_button.blockSignals(True)
+        try:
+            self.right_fullscreen_button.setChecked(mode == "right")
+        finally:
+            self.right_fullscreen_button.blockSignals(False)
 
     def _build_button(self, text: str, label: str, tooltip: str, checkable: bool) -> QPushButton:
         """Create one square button used in the comparison column.
