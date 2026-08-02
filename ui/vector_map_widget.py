@@ -181,6 +181,8 @@ class VectorMapWidget(QWidget):
             - ``MainWindow._on_map_view_changed``
         """
         normalized = self._normalize_view_state(state)
+        if normalized == self._last_view_state:
+            return
         self._last_view_state = normalized
         if not self._ready:
             return

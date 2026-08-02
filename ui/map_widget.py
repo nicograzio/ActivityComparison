@@ -14,12 +14,21 @@ from pathlib import Path
 from typing import Any
 
 import folium
-from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl, QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 from core.analyzer import calculate_point_speed, haversine_distance
 from core.colorizer import value_to_color
+
+
+class _MapViewBridge(QObject):
+    viewChanged = pyqtSignal(dict)
+
+    @pyqtSlot("QVariant")
+    def onViewChanged(self, state):
+        self.viewChanged.emit(state)
 
 
 class MapWidget(QWidget):
@@ -35,7 +44,14 @@ class MapWidget(QWidget):
             "center": [44.58333, 10.73333],
             "zoom": 14,
         }
-        
+
+        self._bridge = _MapViewBridge()
+        self._bridge.viewChanged.connect(self._emit_view_changed)
+        self._channel = QWebChannel(self)
+        self._channel.registerObject("bridge", self._bridge)
+
+        self._ignore_next_view_change = False
+
         # Current hovered point for map synchronization
         self._current_hovered_point = None
         self._points_list = []  # Store points for index lookup
@@ -44,14 +60,19 @@ class MapWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.view = QWebEngineView(self)
+        self.view.page().setWebChannel(self._channel)
         layout.addWidget(self.view)
 
         self.view.loadFinished.connect(self._on_load_finished)
-        
+
         # Initial empty map
         self._update_map(None)
 
     def _emit_view_changed(self, state):
+        if self._ignore_next_view_change:
+            self._ignore_next_view_change = False
+            return
+        self._last_view_state = state
         self.viewChanged.emit(state)
 
     def _on_load_finished(self, ok: bool):
@@ -66,9 +87,10 @@ class MapWidget(QWidget):
         data = io.BytesIO()
         m.save(data, close_file=False)
         html = data.getvalue().decode()
-        
+
         # Inject script to catch view changes, expose sync API, and draw track dynamically
         sync_script = """
+        <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script>
         function setupSync() {
             var maps = [];
@@ -77,20 +99,33 @@ class MapWidget(QWidget):
             for (var key in window) {
                 if (key.startsWith('map_') && window[key] instanceof L.Map) {
                     var map = window[key];
-                    
+
                     window.leafletMap = map;
-                    
+
+                    if (window.qt && window.qt.webChannelTransport) {
+                        new QWebChannel(window.qt.webChannelTransport, function(channel) {
+                            window.python_bridge = channel.objects.bridge;
+                        });
+                    }
+
+                    window.__ignoreViewEvent = false;
+
                     map.on('moveend', function() {
+                        if (window.__ignoreViewEvent && window.__ignoreViewEvent > 0) {
+                            window.__ignoreViewEvent -= 1;
+                            return;
+                        }
+
                         var center = map.getCenter();
                         var state = {
                             center: [center.lat, center.lng],
                             zoom: map.getZoom()
                         };
-                        if (window.python_bridge) {
-                            // If we had a QWebChannel, we'd use it here.
+                        if (window.python_bridge && window.python_bridge.onViewChanged) {
+                            window.python_bridge.onViewChanged(state);
                         }
                     });
-                    
+
                     window.getViewState = function() {
                         var center = map.getCenter();
                         return {
@@ -98,13 +133,14 @@ class MapWidget(QWidget):
                             zoom: map.getZoom()
                         };
                     };
-                    
+
                     window.setViewState = function(state) {
                         if (state && state.center) {
+                            window.__ignoreViewEvent += 1;
                             map.setView(state.center, state.zoom, {animate: false});
                         }
                     };
-                    
+
                     // Dynamic drawing function
                     window.drawTrack = function(points, fitBounds) {
                         // Clear existing track layers
@@ -117,7 +153,6 @@ class MapWidget(QWidget):
 
                         if (!points || points.length < 2) return;
 
-                        
                         // Canvas renderer for high-performance canvas path drawing
                         var canvasRenderer = L.canvas();
 
@@ -190,14 +225,14 @@ class MapWidget(QWidget):
                             map.fitBounds([[minLat, minLon], [maxLat, maxLon]]);
                         }
                     };
-                    
+
                     // Function to draw/update hovered point marker
                     window.drawHoveredPoint = function(pointData) {
                         // Remove existing hovered marker
                         if (window.hoveredMarker) {
                             map.removeLayer(window.hoveredMarker);
                         }
-                        
+
                         // Add new marker with red circle
                         window.hoveredMarker = L.circleMarker([pointData.lat, pointData.lng], {
                             radius: 8,
@@ -208,7 +243,7 @@ class MapWidget(QWidget):
                             fillOpacity: 0.8
                         }).addTo(map);
                     };
-                    
+
                     // Function to clear hovered point marker
                     window.clearHoveredPoint = function() {
                         if (window.hoveredMarker) {
@@ -216,7 +251,7 @@ class MapWidget(QWidget):
                             window.hoveredMarker = null;
                         }
                     };
-                    
+
                     break;
                 }
             }
@@ -226,19 +261,19 @@ class MapWidget(QWidget):
         """
         if "</body>" in html:
             return html.replace("</body>", f"{sync_script}</body>")
-        
+
         return html + sync_script
 
     def _update_map(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
         # Default center and zoom
         center = [44.58333, 10.73333]
         zoom = 14
-        
+
         m = folium.Map(location=center, zoom_start=zoom, control_scale=True)
-        
+
         # Genera l'HTML completo applicando i fix CSS e JS
         content = self._get_html_template(m)
-        
+
         # Carica l'HTML sbloccando i permessi internet con l'URL di base fittizio
         self.view.setHtml(content, QUrl("http://localhost/"))
 
@@ -255,14 +290,14 @@ class MapWidget(QWidget):
 
         # Store points for later reference
         self._points_list = points
-        
+
         points_js = []
         for i in range(len(points)):
             p = points[i]
             color = "blue"
             if color_mode != "Nessuna" and i < len(points) - 1:
                 p1 = p
-                p2 = points[i+1]
+                p2 = points[i + 1]
                 val = None
                 if color_mode == "Velocità":
                     val = calculate_point_speed(p1, p2)
@@ -270,12 +305,12 @@ class MapWidget(QWidget):
                     dist = haversine_distance(p1, p2)
                     if dist > 0 and p1.altitude is not None and p2.altitude is not None:
                         val = ((p2.altitude - p1.altitude) / dist) * 100
-                
+
                 color = "#808080"
                 if val is not None:
                     color_q = value_to_color(val, minimum or 0, maximum or 0)
                     color = color_q.name()
-            
+
             points_js.append([p.latitude, p.longitude, color])
 
         js_data = json.dumps(points_js)
@@ -285,20 +320,51 @@ class MapWidget(QWidget):
     def get_view_state(self) -> dict[str, Any]:
         return self._last_view_state
 
-    def set_view_state(self, state: Any):
+    def get_view_state_async(self, callback):
         if not self._ready:
+            callback(self._last_view_state)
             return
-        
-        js_state = json.dumps(state)
-        self.view.page().runJavaScript(f"if (window.setViewState) window.setViewState({js_state});")
-        self._last_view_state = state
-    
+        self.view.page().runJavaScript(
+            "window.getViewState ? window.getViewState() : null;",
+            lambda result: callback(result or self._last_view_state),
+        )
+
+    def set_view_state(self, state: Any, callback=None):
+        if not self._ready:
+            if callback:
+                callback(None)
+            return
+
+        normalized = state
+        try:
+            normalized = json.loads(json.dumps(state))
+        except Exception:
+            pass
+
+        if normalized == self._last_view_state:
+            if callback:
+                callback(None)
+            return
+
+        self._ignore_next_view_change = True
+        js_state = json.dumps(normalized)
+
+        def _on_set_done(result=None):
+            if callback:
+                callback(result)
+
+        self.view.page().runJavaScript(
+            f"if (window.setViewState) window.setViewState({js_state});",
+            _on_set_done,
+        )
+        self._last_view_state = normalized
+
     def set_hovered_point(self, point_index: int):
         """Update the hovered point marker on the map.
-        
+
         Called by:
             - ``MainWindow`` when a point is hovered on the graph
-        
+
         Args:
             point_index: Index of the hovered point in the track
         """
@@ -306,14 +372,16 @@ class MapWidget(QWidget):
             self._current_hovered_point = None
             self.view.page().runJavaScript("if (window.clearHoveredPoint) window.clearHoveredPoint();")
             return
-        
+
         self._current_hovered_point = point_index
         point = self._points_list[point_index]
-        
+
         # Send point coordinates to map for marker display
-        point_data = json.dumps({
-            "lat": point.latitude,
-            "lng": point.longitude,
-            "index": point_index
-        })
+        point_data = json.dumps(
+            {
+                "lat": point.latitude,
+                "lng": point.longitude,
+                "index": point_index,
+            }
+        )
         self.view.page().runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")

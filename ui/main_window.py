@@ -223,14 +223,25 @@ class MainWindow(QMainWindow):
         """
         if not self._map_supports_view_sync(source_panel) or not self._map_supports_view_sync(target_panel):
             return
-        state = source_panel.map.get_view_state()
-        if not state:
-            return
-        self._syncing_maps = True
-        try:
-            target_panel.map.set_view_state(state)
-        finally:
-            self._syncing_maps = False
+
+        def _apply_state(state):
+            if not state:
+                return
+            self._syncing_maps = True
+
+            def _release_sync(result=None):
+                self._syncing_maps = False
+
+            target_panel.map.set_view_state(state, _release_sync)
+
+        get_view_state = getattr(source_panel.map, "get_view_state_async", None)
+        if callable(get_view_state):
+            get_view_state(_apply_state)
+        else:
+            state = source_panel.map.get_view_state()
+            if not state:
+                return
+            _apply_state(state)
 
     def _on_map_view_changed(self, source_panel, state):
         """Mirror a changed map view to the opposite panel.
@@ -247,11 +258,17 @@ class MainWindow(QMainWindow):
         target_panel = self.right_panel if source_panel is self.left_panel else self.left_panel
         if not self._map_supports_view_sync(target_panel):
             return
+
+        target_state = target_panel.map.get_view_state()
+        if target_state == state:
+            return
+
         self._syncing_maps = True
-        try:
-            target_panel.map.set_view_state(state)
-        finally:
+
+        def _release_sync(result=None):
             self._syncing_maps = False
+
+        target_panel.map.set_view_state(state, _release_sync)
 
     def _on_sync_scales_toggled(self, enabled: bool):
         """Toggle scale synchronization across both activities.
