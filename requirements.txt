@@ -4,6 +4,6 @@ Pillow
 numpy
 fitparse
 gpxpy
-matplotlib
 folium
+pyqtgraph
 PyQt6-WebEngine
