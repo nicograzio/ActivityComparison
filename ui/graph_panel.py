@@ -173,13 +173,13 @@ class GraphPanel(QWidget):
         self.vb_speed.sigResized.connect(update_views)
 
         # Style the curves
-        self.curve_speed = pg.PlotCurveItem(pen=pg.mkPen(color='#3498db', width=2))
+        self.curve_speed = pg.PlotDataItem(pen=pg.mkPen(color='#3498db', width=2))
         self.vb_speed.addItem(self.curve_speed)
         
-        self.curve_hr = pg.PlotCurveItem(pen=pg.mkPen(color='#e74c3c', width=2))
+        self.curve_hr = pg.PlotDataItem(pen=pg.mkPen(color='#e74c3c', width=2))
         self.vb_hr.addItem(self.curve_hr)
         
-        self.curve_alt = pg.PlotCurveItem(pen=pg.mkPen(color='#888888', width=1.5))
+        self.curve_alt = pg.PlotDataItem(pen=pg.mkPen(color='#888888', width=1.5))
         self.vb_alt.addItem(self.curve_alt)
         
         # Interactive elements: Crosshair vertical line
@@ -227,6 +227,35 @@ class GraphPanel(QWidget):
         if show_speed: self.vb_speed.autoRange()
         if show_alt: self.vb_alt.autoRange()
         if show_hr: self.vb_hr.autoRange()
+        
+        self._update_limits()
+
+    def _update_limits(self):
+        """Set limits to prevent zooming out beyond data bounds."""
+        if len(self._time) == 0:
+            return
+            
+        x_min, x_max = np.min(self._time), np.max(self._time)
+        
+        # Buffer for X limits
+        x_range = x_max - x_min
+        self.vb_speed.setLimits(xMin=x_min - x_range*0.02, xMax=x_max + x_range*0.02)
+        
+        # Y limits for each series
+        if self._has_speed:
+            y_min, y_max = np.min(self._speeds), np.max(self._speeds)
+            y_range = max(y_max - y_min, 1.0)
+            self.vb_speed.setLimits(yMin=y_min - y_range*0.1, yMax=y_max + y_range*0.1)
+            
+        if self._has_altitude:
+            y_min, y_max = np.min(self._altitudes), np.max(self._altitudes)
+            y_range = max(y_max - y_min, 1.0)
+            self.vb_alt.setLimits(yMin=y_min - y_range*0.1, yMax=y_max + y_range*0.1)
+            
+        if self._has_hr:
+            y_min, y_max = np.min(self._heart_rates), np.max(self._heart_rates)
+            y_range = max(y_max - y_min, 1.0)
+            self.vb_hr.setLimits(yMin=y_min - y_range*0.1, yMax=y_max + y_range*0.1)
 
     def set_series(self, x_values, speeds, altitudes, heart_rates, x_mode="Tempo"):
         """Replace the current plot data and redraw the graph.
@@ -290,6 +319,52 @@ class GraphPanel(QWidget):
         
         # Set visibility and trigger autoRange
         self._update_visibility()
+        
+        # Reset view to data
+        self.plot_item.autoRange()
+        self.vb_alt.autoRange()
+        self.vb_hr.autoRange()
+
+        # Connect Y-axis scaling if user wants them linked
+        # When vb_speed Y range changes, we want to scale others proportionally
+        self.vb_speed.sigYRangeChanged.connect(self._sync_y_ranges)
+
+    def _sync_y_ranges(self):
+        """Synchronize Y ranges of all ViewBoxes proportionally."""
+        if len(self._time) == 0 or not self.vb_speed.viewRange():
+            return
+            
+        # Disable signals to avoid recursion
+        self.vb_speed.blockSignals(True)
+        self.vb_alt.blockSignals(True)
+        self.vb_hr.blockSignals(True)
+        
+        try:
+            # Current Y range for speed (normalized 0-1)
+            s_min, s_max = self.vb_speed.viewRange()[1]
+            data_s_min, data_s_max = np.min(self._speeds), np.max(self._speeds)
+            data_s_range = max(data_s_max - data_s_min, 1.0)
+            
+            rel_min = (s_min - data_s_min) / data_s_range
+            rel_max = (s_max - data_s_min) / data_s_range
+            
+            if self._has_altitude:
+                data_a_min, data_a_max = np.min(self._altitudes), np.max(self._altitudes)
+                data_a_range = max(data_a_max - data_a_min, 1.0)
+                a_min = data_a_min + rel_min * data_a_range
+                a_max = data_a_min + rel_max * data_a_range
+                self.vb_alt.setYRange(a_min, a_max, padding=0)
+                
+            if self._has_hr:
+                data_h_min, data_h_max = np.min(self._heart_rates), np.max(self._heart_rates)
+                data_h_range = max(data_h_max - data_h_min, 1.0)
+                h_min = data_h_min + rel_min * data_h_range
+                h_max = data_h_min + rel_max * data_h_range
+                self.vb_hr.setYRange(h_min, h_max, padding=0)
+        finally:
+            self.vb_speed.blockSignals(False)
+            self.vb_alt.blockSignals(False)
+            self.vb_hr.blockSignals(False)
 
     def _on_mouse_move(self, evt):
         """Handle mouse movement on the graph canvas."""
