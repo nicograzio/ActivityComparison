@@ -18,8 +18,9 @@ Consumes:
 from pathlib import Path
 from enum import Enum
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip
+from PyQt6.QtGui import QPixmap, QColor
 
 from ui.map_widget import MapWidget
 
@@ -127,26 +128,66 @@ class TrackPanel(QWidget):
         self.other_panel = None
         self.sync_scales_enabled = False
 
+        # Pre-create icon labels to avoid adding them to layout multiple times
+        self.icon_labels = {
+            "gps": QLabel(),
+            "heart_rate": QLabel(),
+            "elevation": QLabel(),
+            "speed": QLabel()
+        }
+
+        self._init_ui()
+
+    def _init_ui(self):
         layout = QVBoxLayout(self)
-        toolbar = QHBoxLayout()
+
+        # First toolbar: Import and Summary
+        top_toolbar = QHBoxLayout()
         self.import_button = QPushButton("Importa FIT / GPX")
         self.import_button.clicked.connect(self.import_file)
-        toolbar.addWidget(self.import_button)
-        self.file_label = QLabel("File: nessun file caricato")
-        toolbar.addWidget(self.file_label)
-        toolbar.addStretch()
-        toolbar.addWidget(QLabel("Colora per:"))
+        top_toolbar.addWidget(self.import_button)
+
+        self.file_label = QLabel("Nessun attività caricata")
+        self.file_label.setStyleSheet("font-weight: bold;")
+        top_toolbar.addWidget(self.file_label)
+
+        # Summary icons container
+        self.summary_container = QWidget()
+        self.summary_layout = QHBoxLayout(self.summary_container)
+        self.summary_layout.setContentsMargins(5, 0, 5, 0)
+        self.summary_layout.setSpacing(10)
+        
+        for label in self.icon_labels.values():
+            self.summary_layout.addWidget(label)
+            label.hide() # Hidden until track loaded
+            label.installEventFilter(self)
+            label.setMouseTracking(True)
+
+        top_toolbar.addWidget(self.summary_container)
+        top_toolbar.addStretch()
+        layout.addLayout(top_toolbar)
+
+        # Second toolbar: Scale controls
+        scale_toolbar = QHBoxLayout()
+        scale_toolbar.addWidget(QLabel("Colora per:"))
         self.color_mode = QComboBox()
         self.color_mode.setEnabled(False)
-        toolbar.addWidget(self.color_mode)
+        self.color_mode.currentTextChanged.connect(self.update_scale)
+        scale_toolbar.addWidget(self.color_mode)
+
+        scale_toolbar.addStretch()
+        scale_toolbar.addWidget(QLabel("Min:"))
         self.min_value = QLineEdit()
         self.max_value = QLineEdit()
+        self.min_value.setFixedWidth(60)
+        self.max_value.setFixedWidth(60)
         self.min_value.setEnabled(False)
         self.max_value.setEnabled(False)
         self.min_value.editingFinished.connect(self._on_scale_limits_edited)
         self.max_value.editingFinished.connect(self._on_scale_limits_edited)
-        toolbar.addWidget(self.min_value)
-        toolbar.addWidget(self.max_value)
+        scale_toolbar.addWidget(self.min_value)
+        scale_toolbar.addWidget(QLabel("Max:"))
+        scale_toolbar.addWidget(self.max_value)
         
         self.scale_mode_button = QPushButton("Automatico")
         self.scale_mode_button.setEnabled(False)
@@ -156,16 +197,11 @@ class TrackPanel(QWidget):
             "Automatico: calcola la scala dalla traccia.\n"
             "Manuale: permette l'inserimento dei valori."
         )
+        self.scale_mode_button.toggled.connect(self._on_scale_mode_changed)
+        scale_toolbar.addWidget(self.scale_mode_button)
 
-        self.scale_mode_button.toggled.connect(
-            self._on_scale_mode_changed
-        )
-        toolbar.addWidget(self.scale_mode_button)
+        layout.addLayout(scale_toolbar)
 
-        layout.addLayout(toolbar)
-
-        self.info_label = QLabel("")
-        layout.addWidget(self.info_label)
         self.map = MapWidget()
         self.map.setMinimumHeight(400)
         layout.addWidget(self.map, stretch=1)
@@ -543,14 +579,94 @@ class TrackPanel(QWidget):
         """
         self._render_visible_track()
 
+    def _set_icon(self, key, icon_name, available, tooltip_title, tooltip_lines):
+        """Helper to set up an icon with color effect and rich text tooltip."""
+        label = self.icon_labels[key]
+        pixmap = QPixmap(f"assets/icons/{icon_name}.png")
+        if not pixmap.isNull():
+            label.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            label.setText("?")
+
+        # Apply color effect
+        effect = QGraphicsColorizeEffect(label)
+        effect.setColor(QColor("green" if available else "red"))
+        label.setGraphicsEffect(effect)
+
+        # Build rich text tooltip
+        rows = "".join(f"<tr><td style='padding-right: 10px;'>{line[0]}</td><td>{line[1]}</td></tr>" for line in tooltip_lines)
+        tooltip_html = (
+            f"<div style='font-family: sans-serif;'>"
+            f"<b>{tooltip_title}</b>"
+            f"<table style='margin-top: 5px; border-collapse: collapse;'>"
+            f"{rows}"
+            f"</table>"
+            f"</div>"
+        )
+        label.setToolTip(tooltip_html)
+        label.show()
+
     def show_summary(self):
-        """Render the capability summary in the info label.
+        """Render the capability summary in the top toolbar with icons and tooltips.
 
         Called by:
             - ``import_file`` after loading a new track
         """
         summary = self.capabilities.summary
-        self.info_label.setText(" | ".join(f"{k}: {'✓' if v is True else ('x' if v is False else v)}" for k, v in summary.items()))
+        stats = self.capabilities.stats
+
+        # GPS
+        gps_available = summary["gps"]
+        gps_lines = [("Stato:", "Presente" if gps_available else "Assente"),
+                     ("Punti:", str(summary['points']))]
+        self._set_icon("gps", "gps", gps_available, "Punti GPS", gps_lines)
+
+        # Heart Rate
+        hr_available = summary["heart_rate"]
+        hr_lines = []
+        if hr_available:
+            s = stats["heart_rate"]
+            hr_lines = [("Min:", f"{s['min']:.0f} bpm"),
+                        ("Max:", f"{s['max']:.0f} bpm"),
+                        ("Media:", f"{s['avg']:.0f} bpm")]
+        else:
+            hr_lines = [("Stato:", "Assente")]
+        self._set_icon("heart_rate", "heart-rate", hr_available, "Frequenza Cardiaca", hr_lines)
+
+        # Elevation
+        elev_available = summary["elevation"]
+        elev_lines = []
+        if elev_available:
+            e = stats["elevation"]
+            sl = stats["slope"]
+            elev_lines = [("Alt. Min:", f"{e['min']:.1f} m"),
+                          ("Alt. Max:", f"{e['max']:.1f} m"),
+                          ("Pend. Min:", f"{sl['min']:.1f} %"),
+                          ("Pend. Max:", f"{sl['max']:.1f} %")]
+        else:
+            elev_lines = [("Stato:", "Assente")]
+        self._set_icon("elevation", "elevation", elev_available, "Altitudine e Pendenza", elev_lines)
+
+        # Speed
+        speed_available = summary["speed"]
+        speed_lines = []
+        if speed_available:
+            s = stats["speed"]
+            speed_lines = [("Min:", f"{s['min']:.1f} km/h"),
+                           ("Max:", f"{s['max']:.1f} km/h"),
+                           ("Media:", f"{s['avg']:.1f} km/h")]
+        else:
+            speed_lines = [("Stato:", "Assente")]
+        self._set_icon("speed", "speed", speed_available, "Velocità", speed_lines)
+ 
+    def eventFilter(self, obj, event):
+        """Show icon tooltips immediately on hover."""
+        if obj in self.icon_labels.values() and event.type() == QEvent.Type.Enter:
+            tooltip_text = obj.toolTip()
+            if tooltip_text:
+                QToolTip.showText(obj.mapToGlobal(obj.rect().bottomLeft()), tooltip_text, obj)
+                return True
+        return super().eventFilter(obj, event)
 
     def _apply_mode_state(self, mode: "ScaleMode", manual_min=None, manual_max=None):
         """Apply the internal state, field editability and caption for a mode.
@@ -645,7 +761,7 @@ class TrackPanel(QWidget):
             ext = Path(filename).suffix.lower()
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.capabilities = TrackCapabilities(self.track)
-            self.file_label.setText(Path(filename).name)
+            self.file_label.setText(f"  {Path(filename).name}")
             self.show_summary()
             self.color_mode.setEnabled(True)
             self.x_axis_combo.setEnabled(True)

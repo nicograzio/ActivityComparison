@@ -513,19 +513,19 @@ class MainWindow(QMainWindow):
                 start_dist = track.start_distance_m
 
         x_mode = panel.x_axis_combo.currentText()
-        x_values, speeds = calculate_track_series(
+        x_values, speeds, altitudes, heart_rates = calculate_track_series(
             track, 
             x_axis_mode=x_mode, 
             first_timestamp=first_ts, 
             start_distance_m=start_dist
         )
         
-        if not x_values or not speeds:
+        if not x_values:
             graph.clear_graph()
             return
 
         graph.setVisible(self._graphs_visible)
-        graph.set_series(x_values, speeds, "Velocità", x_mode=x_mode)
+        graph.set_series(x_values, speeds, altitudes, heart_rates, x_mode=x_mode)
 
     def _invert_activities(self):
         """Swap the left and right activities, graphs and splitters.

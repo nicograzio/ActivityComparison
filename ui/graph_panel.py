@@ -10,7 +10,7 @@ Consumed by:
 """
 
 from PyQt6.QtCore import QSize, pyqtSignal, Qt
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel
 import pyqtgraph as pg
 import numpy as np
 
@@ -45,7 +45,7 @@ class TimeAxisItem(pg.AxisItem):
 
 
 class GraphPanel(QWidget):
-    """Render a time series for one activity using PyQtGraph.
+    """Render time/distance series for one activity using PyQtGraph.
 
     Created by:
         - ``MainWindow``
@@ -58,12 +58,65 @@ class GraphPanel(QWidget):
         """Create the graph container and initialize the PyQtGraph widget."""
         super().__init__()
         self._time = np.array([])
-        self._values = np.array([])
+        self._speeds = np.array([])
+        self._altitudes = np.array([])
+        self._heart_rates = np.array([])
         self._x_mode = "Tempo"
-        self.setMinimumHeight(220)
+        
+        self._has_altitude = False
+        self._has_speed = False
+        self._has_hr = False
+        
+        self.setMinimumHeight(240)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Legend / Series Toggles
+        self.legend_widget = QWidget()
+        self.legend_layout = QHBoxLayout(self.legend_widget)
+        self.legend_layout.setContentsMargins(10, 2, 10, 2)
+        self.legend_layout.setSpacing(15)
+        self.legend_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        # Altitude style (grey background filled line)
+        self.cb_altitude = QCheckBox("Altitudine")
+        self.cb_altitude.setChecked(True)
+        self.cb_altitude.setStyleSheet("""
+            QCheckBox { color: #888888; font-weight: bold; background-color: transparent; }
+            QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #555555; background-color: #888888; }
+            QCheckBox::indicator:unchecked { background-color: transparent; }
+        """)
+
+        # Speed style (blue line)
+        self.cb_speed = QCheckBox("Velocità")
+        self.cb_speed.setChecked(True)
+        self.cb_speed.setStyleSheet("""
+            QCheckBox { color: #3498db; font-weight: bold; background-color: transparent; }
+            QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #555555; background-color: #3498db; }
+            QCheckBox::indicator:unchecked { background-color: transparent; }
+        """)
+
+        # Heart rate style (red line)
+        self.cb_hr = QCheckBox("Cardio")
+        self.cb_hr.setChecked(True)
+        self.cb_hr.setStyleSheet("""
+            QCheckBox { color: #e74c3c; font-weight: bold; background-color: transparent; }
+            QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #555555; background-color: #e74c3c; }
+            QCheckBox::indicator:unchecked { background-color: transparent; }
+        """)
+
+        self.legend_layout.addWidget(self.cb_altitude)
+        self.legend_layout.addWidget(self.cb_speed)
+        self.legend_layout.addWidget(self.cb_hr)
+        layout.addWidget(self.legend_widget)
+        self.legend_widget.hide() # Hide until data is loaded
+
+        # Connect slots
+        self.cb_altitude.stateChanged.connect(self._update_visibility)
+        self.cb_speed.stateChanged.connect(self._update_visibility)
+        self.cb_hr.stateChanged.connect(self._update_visibility)
 
         # Create PlotWidget with custom X axis
         self.time_axis = TimeAxisItem(orientation='bottom')
@@ -72,27 +125,80 @@ class GraphPanel(QWidget):
         self.plot_widget = pg.PlotWidget(axisItems={'bottom': self.time_axis})
         self.plot_widget.setMinimumSize(QSize(400, 180))
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_widget.getAxis('bottom').setLabel("Tempo")
-        self.plot_widget.getAxis('left').setLabel("Valore")
         
-        # Style the plot
         self.plot_item = self.plot_widget.getPlotItem()
-        self.curve = self.plot_item.plot(pen=pg.mkPen(color='#3498db', width=2))
         
-        # Interactive elements: Crosshair
-        self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='r', style=Qt.PenStyle.DashLine, width=1.5))
-        self.h_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color='r', style=Qt.PenStyle.DashLine, width=1.5))
-        self.v_line.hide()
-        self.h_line.hide()
-        self.plot_item.addItem(self.v_line, ignoreBounds=True)
-        self.plot_item.addItem(self.h_line, ignoreBounds=True)
+        # We use separate ViewBoxes for multiple Y axes
+        # Speed is the main ViewBox
+        self.vb_speed = self.plot_item.vb
+        
+        # Extra ViewBox for Heart Rate
+        self.vb_hr = pg.ViewBox()
+        self.plot_item.scene().addItem(self.vb_hr)
+        
+        # Extra ViewBox for Altitude
+        self.vb_alt = pg.ViewBox()
+        self.plot_item.scene().addItem(self.vb_alt)
+        
+        # Add axes to the layout
+        # Speed Axis (Left 1)
+        self.ax_speed = self.plot_item.getAxis('left')
+        self.ax_speed.setLabel('Velocità', color='#3498db', units='km/h')
+        self.ax_speed.setPen('#3498db')
+        
+        # Heart Rate Axis (Left 2, we can put it on the right or shift left)
+        # For simplicity and clean look, let's put Altitude on the right and HR on another left axis or right.
+        # User wants "tanti assi delle Y", let's use both sides.
+        self.ax_hr = pg.AxisItem('right')
+        self.plot_item.layout.addItem(self.ax_hr, 2, 2)
+        self.ax_hr.setLabel('Cardio', color='#e74c3c', units='bpm')
+        self.ax_hr.setPen('#e74c3c')
+        self.ax_hr.linkToView(self.vb_hr)
+        
+        # Altitude Axis (Right 2)
+        self.ax_alt = pg.AxisItem('right')
+        self.plot_item.layout.addItem(self.ax_alt, 2, 3)
+        self.ax_alt.setLabel('Altitudine', color='#888888', units='m')
+        self.ax_alt.setPen('#888888')
+        self.ax_alt.linkToView(self.vb_alt)
 
-        # Point marker
-        self.point_marker = pg.ScatterPlotItem(size=10, pen=pg.mkPen('r'), brush=pg.mkBrush('r'))
-        self.plot_item.addItem(self.point_marker)
+        # Link X axes of all ViewBoxes
+        self.vb_hr.setXLink(self.vb_speed)
+        self.vb_alt.setXLink(self.vb_speed)
+
+        # Synchronize ViewBox resizing
+        def update_views():
+            self.vb_hr.setGeometry(self.vb_speed.sceneBoundingRect())
+            self.vb_alt.setGeometry(self.vb_speed.sceneBoundingRect())
+        self.vb_speed.sigResized.connect(update_views)
+
+        # Style the curves
+        self.curve_speed = pg.PlotCurveItem(pen=pg.mkPen(color='#3498db', width=2))
+        self.vb_speed.addItem(self.curve_speed)
+        
+        self.curve_hr = pg.PlotCurveItem(pen=pg.mkPen(color='#e74c3c', width=2))
+        self.vb_hr.addItem(self.curve_hr)
+        
+        self.curve_alt = pg.PlotCurveItem(pen=pg.mkPen(color='#888888', width=1.5))
+        self.vb_alt.addItem(self.curve_alt)
+        
+        # Interactive elements: Crosshair vertical line
+        self.v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='#f1c40f', style=Qt.PenStyle.DashLine, width=1.5))
+        self.v_line.hide()
+        self.plot_item.addItem(self.v_line, ignoreBounds=True)
+
+        # Point markers for each series
+        self.marker_speed = pg.ScatterPlotItem(size=10, pen=pg.mkPen('#3498db'), brush=pg.mkBrush('#3498db'))
+        self.vb_speed.addItem(self.marker_speed)
+        
+        self.marker_hr = pg.ScatterPlotItem(size=10, pen=pg.mkPen('#e74c3c'), brush=pg.mkBrush('#e74c3c'))
+        self.vb_hr.addItem(self.marker_hr)
+        
+        self.marker_alt = pg.ScatterPlotItem(size=10, pen=pg.mkPen('#888888'), brush=pg.mkBrush('#888888'))
+        self.vb_alt.addItem(self.marker_alt)
         
         # Tooltip-like label
-        self.label = pg.TextItem(anchor=(0, 1), color='#f1c40f', fill=(30, 30, 30, 200))
+        self.label = pg.TextItem(anchor=(0, 1), color='#f1c40f', fill=(30, 30, 30, 220))
         self.label.hide()
         self.plot_item.addItem(self.label)
 
@@ -102,7 +208,27 @@ class GraphPanel(QWidget):
         # Connect mouse motion event
         self.proxy = pg.SignalProxy(self.plot_item.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_move)
 
-    def set_series(self, x_values, data_values, label="Valore", x_mode="Tempo"):
+    def _update_visibility(self):
+        """Update visibility of graph series based on checkbox toggles."""
+        show_alt = self.cb_altitude.isChecked() and self._has_altitude
+        show_speed = self.cb_speed.isChecked() and self._has_speed
+        show_hr = self.cb_hr.isChecked() and self._has_hr
+
+        self.curve_alt.setVisible(show_alt)
+        self.ax_alt.setVisible(show_alt)
+        
+        self.curve_speed.setVisible(show_speed)
+        self.ax_speed.setVisible(show_speed)
+        
+        self.curve_hr.setVisible(show_hr)
+        self.ax_hr.setVisible(show_hr)
+        
+        # Force autoRange for all active viewboxes
+        if show_speed: self.vb_speed.autoRange()
+        if show_alt: self.vb_alt.autoRange()
+        if show_hr: self.vb_hr.autoRange()
+
+    def set_series(self, x_values, speeds, altitudes, heart_rates, x_mode="Tempo"):
         """Replace the current plot data and redraw the graph.
 
         Called by:
@@ -110,17 +236,31 @@ class GraphPanel(QWidget):
 
         Args:
             x_values: X axis samples.
-            data_values: Y axis samples.
-            label: Y axis label to display.
+            speeds: Speed Y axis samples.
+            altitudes: Altitude Y axis samples.
+            heart_rates: Heart rate Y axis samples.
             x_mode: "Tempo" or "Distanza".
         """
         self._time = np.array(x_values)
-        self._values = np.array(data_values)
+        self._speeds = np.array(speeds)
+        self._altitudes = np.array(altitudes)
+        self._heart_rates = np.array(heart_rates)
         self._x_mode = x_mode
 
         if len(self._time) == 0:
             self.clear_graph()
             return
+
+        # Determine data availability
+        self._has_speed = len(self._speeds) > 0 and any(s != 0.0 for s in self._speeds)
+        self._has_altitude = len(self._altitudes) > 0 and any(a != 0.0 for a in self._altitudes)
+        self._has_hr = len(self._heart_rates) > 0 and any(h != 0.0 for h in self._heart_rates)
+
+        # Show legend and checkboxes accordingly
+        self.legend_widget.show()
+        self.cb_altitude.setVisible(self._has_altitude)
+        self.cb_speed.setVisible(self._has_speed)
+        self.cb_hr.setVisible(self._has_hr)
 
         # Update X axis type and label
         if x_mode == "Tempo":
@@ -130,53 +270,98 @@ class GraphPanel(QWidget):
             self.plot_item.setAxisItems({'bottom': self.dist_axis})
             self.plot_widget.getAxis('bottom').setLabel("Distanza", units="km")
 
-        self.curve.setData(self._time, self._values)
-        self.plot_item.getAxis('left').setLabel(label)
+        # Set curve data
+        self.curve_speed.setData(self._time, self._speeds)
+        self.curve_hr.setData(self._time, self._heart_rates)
+        self.curve_alt.setData(self._time, self._altitudes)
         
-        # Reset view to data
-        self.plot_item.autoRange()
+        if self._has_altitude:
+            min_alt = np.nanmin(self._altitudes)
+            self.curve_alt.setFillLevel(min_alt)
+            self.curve_alt.setFillBrush(pg.mkBrush(128, 128, 128, 60))
+
+        # Align ranges: we want them all to "start at the same base"
+        # In PyQtGraph with multiple ViewBoxes, each has its own range.
+        # To align them visually so they all start at the bottom, we can
+        # set the Y-range for each to [min_val, max_val + padding].
+        # But autoRange does this automatically for each ViewBox.
+        # The user said "i due min devono essere portati allo stesso livello",
+        # which is exactly what happens when each ViewBox auto-scales to its data.
+        
+        # Set visibility and trigger autoRange
+        self._update_visibility()
 
     def _on_mouse_move(self, evt):
         """Handle mouse movement on the graph canvas."""
         pos = evt[0]
         if self.plot_item.sceneBoundingRect().contains(pos):
-            mouse_point = self.plot_item.vb.mapSceneToView(pos)
+            mouse_point = self.vb_speed.mapSceneToView(pos)
             x_pos = mouse_point.x()
             
             if len(self._time) == 0:
                 return
 
-            # Find the closest point in the data using numpy for speed
+            # Find closest point index in the X-axis data
             idx = np.abs(self._time - x_pos).argmin()
-            
             x_value = self._time[idx]
-            y_value = self._values[idx]
             
-            # Update crosshair and marker
+            # Show the vertical crosshair line
             self.v_line.setPos(x_value)
-            self.h_line.setPos(y_value)
             self.v_line.show()
-            self.h_line.show()
             
-            self.point_marker.setData([x_value], [y_value])
+            lines = []
             
-            # Update label
-            y_label = self.plot_item.getAxis('left').labelText
-            x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
-            self.label.setText(f"X: {x_formatted}\n{y_label}: {y_value:.2f}")
-            self.label.setPos(x_value, y_value)
-            self.label.show()
+            # Determine visibility/presence
+            show_alt = self.cb_altitude.isChecked() and self._has_altitude
+            show_speed = self.cb_speed.isChecked() and self._has_speed
+            show_hr = self.cb_hr.isChecked() and self._has_hr
+
+            # Update markers and tooltip
+            if show_alt:
+                y_alt = self._altitudes[idx]
+                self.marker_alt.setData([x_value], [y_alt])
+                self.marker_alt.show()
+                lines.append(f"Alt: {y_alt:.1f} m")
+            else:
+                self.marker_alt.hide()
+
+            if show_speed:
+                y_spd = self._speeds[idx]
+                self.marker_speed.setData([x_value], [y_spd])
+                self.marker_speed.show()
+                lines.append(f"Vel: {y_spd:.1f} km/h")
+            else:
+                self.marker_speed.hide()
+
+            if show_hr:
+                y_hr = self._heart_rates[idx]
+                self.marker_hr.setData([x_value], [y_hr])
+                self.marker_hr.show()
+                lines.append(f"Cardio: {int(y_hr)} bpm")
+            else:
+                self.marker_hr.hide()
+
+            if lines:
+                x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
+                self.label.setText(f"X: {x_formatted}\n" + "\n".join(lines))
+                # Position label in the main view area
+                self.label.setPos(x_value, self.vb_speed.viewRange()[1][1])
+                self.label.show()
+            else:
+                self.label.hide()
             
             # Emit signal for map synchronization
-            self.point_hovered.emit(int(idx), float(x_value), float(y_value))
+            y_val_emit = self._speeds[idx] if self._has_speed else (self._altitudes[idx] if self._has_altitude else 0.0)
+            self.point_hovered.emit(int(idx), float(x_value), float(y_val_emit))
         else:
             self._hide_interactive_elements()
 
     def _hide_interactive_elements(self):
-        """Hide crosshair, marker and label."""
+        """Hide crosshair, markers and label."""
         self.v_line.hide()
-        self.h_line.hide()
-        self.point_marker.setData([], [])
+        self.marker_alt.hide()
+        self.marker_speed.hide()
+        self.marker_hr.hide()
         self.label.hide()
 
     def leaveEvent(self, event):
@@ -185,12 +370,22 @@ class GraphPanel(QWidget):
         super().leaveEvent(event)
 
     def clear_graph(self):
-        """Clear the graph state and remove the plotted line.
-
-        Called by:
-            - ``MainWindow._update_graph`` when no visible track is available
-        """
+        """Clear the graph state and remove the plotted lines."""
         self._time = np.array([])
-        self._values = np.array([])
-        self.curve.setData([], [])
+        self._speeds = np.array([])
+        self._altitudes = np.array([])
+        self._heart_rates = np.array([])
+        self._has_altitude = False
+        self._has_speed = False
+        self._has_hr = False
+        
+        self.curve_alt.setData([], [])
+        self.curve_speed.setData([], [])
+        self.curve_hr.setData([], [])
+        
+        self.legend_widget.hide()
+        self.cb_altitude.setVisible(False)
+        self.cb_speed.setVisible(False)
+        self.cb_hr.setVisible(False)
+        
         self._hide_interactive_elements()

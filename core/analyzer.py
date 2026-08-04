@@ -99,14 +99,16 @@ def calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=None, sta
         start_distance_m: Original start distance offset in meters.
 
     Returns:
-        tuple[list[float], list[float]]: X-axis samples and speed samples.
+        tuple[list[float], list[float], list[float], list[float]]: X-axis samples, speeds, altitudes, and heart rates.
     """
     points = getattr(track, "points", [])
     if not points:
-        return [], []
+        return [], [], [], []
 
     x_values = []
     speeds = []
+    altitudes = []
+    heart_rates = []
 
     # Calculate distance profile for the current segment to handle relative distances
     segment_distances, _ = track_distance_profile(track)
@@ -126,6 +128,14 @@ def calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=None, sta
         
         speeds.append(float(speed) if speed is not None else 0.0)
 
+        # Altitude
+        alt = getattr(current, "altitude", None)
+        altitudes.append(float(alt) if alt is not None else None)
+
+        # Heart rate
+        hr = getattr(current, "heart_rate", None)
+        heart_rates.append(int(hr) if hr is not None else None)
+
         # X-axis value calculation
         if x_axis_mode == "Distanza":
             # Real distance = offset + distance within this segment
@@ -142,13 +152,46 @@ def calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=None, sta
             else:
                 x_values.append(float(index))
 
-    return x_values, speeds
+    # Handle missing/None values gracefully for altitude and heart rate by forward/backward filling
+    # checking if they are present at all.
+    has_altitude = any(alt is not None for alt in altitudes)
+    cleaned_altitudes = []
+    if has_altitude:
+        last_valid_alt = 0.0
+        for alt in altitudes:
+            if alt is not None:
+                last_valid_alt = alt
+                break
+        for alt in altitudes:
+            if alt is not None:
+                last_valid_alt = alt
+            cleaned_altitudes.append(last_valid_alt)
+    else:
+        cleaned_altitudes = [0.0] * len(points)
+
+    has_heart_rate = any(hr is not None for hr in heart_rates)
+    cleaned_heart_rates = []
+    if has_heart_rate:
+        last_valid_hr = 0.0
+        for hr in heart_rates:
+            if hr is not None:
+                last_valid_hr = float(hr)
+                break
+        for hr in heart_rates:
+            if hr is not None:
+                last_valid_hr = float(hr)
+            cleaned_heart_rates.append(last_valid_hr)
+    else:
+        cleaned_heart_rates = [0.0] * len(points)
+
+    return x_values, speeds, cleaned_altitudes, cleaned_heart_rates
 
 
 def calculate_speed_series(track):
     """Build the time/speed series used by the graph widgets (legacy wrapper)."""
     first_ts = track.points[0].timestamp if track.points else None
-    return calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=first_ts)
+    x_val, spd, _, _ = calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=first_ts)
+    return x_val, spd
 
 
 def calculate_speed_range(track):

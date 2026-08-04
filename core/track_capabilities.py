@@ -28,6 +28,62 @@ class TrackCapabilities:
         self.has_speed = self._has_speed(track)
         self.has_heart_rate = self._has_heart_rate(track)
 
+        # Statistics for tooltips
+        self.stats = self._calculate_stats(track)
+
+    def _calculate_stats(self, track):
+        """Calculate statistics for tooltips."""
+        import numpy as np
+        from core.analyzer import calculate_point_speed
+
+        stats = {
+            "elevation": {"min": None, "max": None},
+            "slope": {"min": None, "max": None},
+            "heart_rate": {"min": None, "max": None, "avg": None},
+            "speed": {"min": None, "max": None, "avg": None}
+        }
+
+        if not track.points:
+            return stats
+
+        # Elevation stats
+        elevations = [p.altitude for p in track.points if p.altitude is not None]
+        if elevations:
+            stats["elevation"]["min"] = min(elevations)
+            stats["elevation"]["max"] = max(elevations)
+
+        # Slope stats
+        slopes = []
+        from core.analyzer import haversine_distance
+        for i in range(1, len(track.points)):
+            prev, curr = track.points[i-1], track.points[i]
+            dist = haversine_distance(prev, curr)
+            if dist > 0 and prev.altitude is not None and curr.altitude is not None:
+                slopes.append(((curr.altitude - prev.altitude) / dist) * 100)
+        if slopes:
+            stats["slope"]["min"] = min(slopes)
+            stats["slope"]["max"] = max(slopes)
+
+        # Heart rate stats
+        hrs = [p.heart_rate for p in track.points if p.heart_rate is not None]
+        if hrs:
+            stats["heart_rate"]["min"] = min(hrs)
+            stats["heart_rate"]["max"] = max(hrs)
+            stats["heart_rate"]["avg"] = sum(hrs) / len(hrs)
+
+        # Speed stats
+        speeds = []
+        for i in range(1, len(track.points)):
+            s = calculate_point_speed(track.points[i-1], track.points[i])
+            if s is not None:
+                speeds.append(s)
+        if speeds:
+            stats["speed"]["min"] = min(speeds)
+            stats["speed"]["max"] = max(speeds)
+            stats["speed"]["avg"] = sum(speeds) / len(speeds)
+
+        return stats
+
     @property
     def available_modes(self):
         """List the color modes the UI can offer.
