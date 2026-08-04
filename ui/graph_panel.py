@@ -123,6 +123,7 @@ class GraphPanel(QWidget):
         self.dist_axis = pg.AxisItem(orientation='bottom')
         
         self.plot_widget = pg.PlotWidget(axisItems={'bottom': self.time_axis})
+        self.plot_widget.setMouseTracking(True)
         self.plot_widget.setMinimumSize(QSize(400, 180))
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
@@ -146,22 +147,21 @@ class GraphPanel(QWidget):
         self.ax_speed.setLabel('Velocità', color='#3498db', units='km/h')
         self.ax_speed.setPen('#3498db')
         
-        # Heart Rate Axis (Left 2, we can put it on the right or shift left)
-        # For simplicity and clean look, let's put Altitude on the right and HR on another left axis or right.
-        # User wants "tanti assi delle Y", let's use both sides.
-        self.ax_hr = pg.AxisItem('right')
-        self.plot_item.layout.addItem(self.ax_hr, 2, 2)
-        self.ax_hr.setLabel('Cardio', color='#e74c3c', units='bpm')
-        self.ax_hr.setPen('#e74c3c')
-        self.ax_hr.linkToView(self.vb_hr)
-        
-        # Altitude Axis (Right 2)
-        self.ax_alt = pg.AxisItem('right')
-        self.plot_item.layout.addItem(self.ax_alt, 2, 3)
+        # Altitude Axis: use the default right axis from PlotItem for the first right-side axis.
+        self.ax_alt = self.plot_item.getAxis('right')
         self.ax_alt.setLabel('Altitudine', color='#888888', units='m')
         self.ax_alt.setPen('#888888')
         self.ax_alt.linkToView(self.vb_alt)
-
+        self.ax_alt.setVisible(True)
+        
+        # Heart Rate Axis: add a second right-side axis in a new column.
+        self.ax_hr = pg.AxisItem('right')
+        self.plot_item.layout.addItem(self.ax_hr, 2, 3)
+        self.ax_hr.setLabel('Cardio', color='#e74c3c', units='bpm')
+        self.ax_hr.setPen('#e74c3c')
+        self.ax_hr.linkToView(self.vb_hr)
+        self.ax_hr.setVisible(True)
+ 
         # Link X axes of all ViewBoxes
         self.vb_hr.setXLink(self.vb_speed)
         self.vb_alt.setXLink(self.vb_speed)
@@ -205,8 +205,10 @@ class GraphPanel(QWidget):
         layout.addWidget(self.plot_widget)
         self.setLayout(layout)
 
+
         # Connect mouse motion event
         self.proxy = pg.SignalProxy(self.plot_item.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_move)
+        self.vb_hr.setVisible(True)  # Ensure HR axis is visible
 
     def _update_visibility(self):
         """Update visibility of graph series based on checkbox toggles."""
@@ -408,6 +410,7 @@ class GraphPanel(QWidget):
             else:
                 self.marker_speed.hide()
 
+
             if show_hr:
                 y_hr = self._heart_rates[idx]
                 self.marker_hr.setData([x_value], [y_hr])
@@ -419,8 +422,24 @@ class GraphPanel(QWidget):
             if lines:
                 x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
                 self.label.setText(f"X: {x_formatted}\n" + "\n".join(lines))
-                # Position label in the main view area
-                self.label.setPos(x_value, self.vb_speed.viewRange()[1][1])
+                # Position label close to mouse and keep it inside the visible plot bounds
+                y_min, y_max = self.vb_speed.viewRange()[1]
+                x_min_vis, x_max_vis = self.vb_speed.viewRange()[0]
+                padding = (y_max - y_min) * 0.06
+                label_y = mouse_point.y() + padding
+                label_y = min(label_y, y_max - padding)
+                label_y = max(label_y, y_min + padding)
+
+                if x_max_vis > x_min_vis:
+                    threshold = x_max_vis - (x_max_vis - x_min_vis) * 0.15
+                    if x_value >= threshold:
+                        self.label.setAnchor((1, 1))
+                    else:
+                        self.label.setAnchor((0, 1))
+                else:
+                    self.label.setAnchor((0, 1))
+
+                self.label.setPos(x_value, label_y)
                 self.label.show()
             else:
                 self.label.hide()
