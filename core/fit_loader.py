@@ -43,10 +43,11 @@ def load_fit(path):
         latitude = latitude * (180 / 2**31)
         longitude = longitude * (180 / 2**31)
 
+        altitude = data.get("altitude") or data.get("enhanced_altitude")
         point = TrackPoint(
             latitude=latitude,
             longitude=longitude,
-            altitude=data.get("altitude"),
+            altitude=altitude,
             timestamp=data.get("timestamp"),
             speed=data.get("speed"),
             heart_rate=data.get("heart_rate"),

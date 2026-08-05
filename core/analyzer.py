@@ -232,21 +232,35 @@ def calculate_slope_range(track):
     Returns:
         tuple[float | None, float | None]: Minimum and maximum slope.
     """
-    values = []
+    points = getattr(track, "points", [])
+    if len(points) < 2:
+        return None, None
 
-    for i in range(1, len(track.points)):
-        previous = track.points[i - 1]
-        current = track.points[i]
+    # Apply a moving average window to smooth altitude data and reduce noise
+    window_size = 11
+    altitudes = [getattr(p, "altitude", 0) or 0 for p in points]
+    smoothed_altitudes = []
+    for i in range(len(altitudes)):
+        start = max(0, i - window_size // 2)
+        end = min(len(altitudes), i + window_size // 2 + 1)
+        window = altitudes[start:end]
+        smoothed_altitudes.append(sum(window) / len(window))
+
+    values = []
+    for i in range(1, len(points)):
+        previous = points[i - 1]
+        current = points[i]
 
         distance = haversine_distance(previous, current)
-        previous_alt = getattr(previous, "altitude", 0) or 0
-        current_alt = getattr(current, "altitude", 0) or 0
-
-        if distance > 0:
+        # Use a minimum distance threshold to avoid extreme slope values from GPS noise
+        if distance > 5.0:
+            previous_alt = smoothed_altitudes[i - 1]
+            current_alt = smoothed_altitudes[i]
             values.append(((current_alt - previous_alt) / distance) * 100)
 
     if not values:
-        return None, None
+        # Fallback if all segments are too short
+        return 0.0, 0.0
 
     return min(values), max(values)
 
