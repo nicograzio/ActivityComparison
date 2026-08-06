@@ -9,7 +9,7 @@ Consumed by:
     - ``MainWindow._update_graph``
 """
 
-from PyQt6.QtCore import QSize, pyqtSignal, Qt
+from PyQt6.QtCore import QSize, pyqtSignal, Qt, QPoint, QPointF
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel
 import pyqtgraph as pg
 import numpy as np
@@ -422,24 +422,44 @@ class GraphPanel(QWidget):
             if lines:
                 x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
                 self.label.setText(f"X: {x_formatted}\n" + "\n".join(lines))
-                # Position label close to mouse and keep it inside the visible plot bounds
-                y_min, y_max = self.vb_speed.viewRange()[1]
-                x_min_vis, x_max_vis = self.vb_speed.viewRange()[0]
-                padding = (y_max - y_min) * 0.06
-                label_y = mouse_point.y() + padding
-                label_y = min(label_y, y_max - padding)
-                label_y = max(label_y, y_min + padding)
+                # Position label: center vertically around cursor (half above, half below).
+                view_rect = self.vb_speed.sceneBoundingRect()
+                top_y = view_rect.top()
+                bottom_y = view_rect.bottom()
 
-                if x_max_vis > x_min_vis:
-                    threshold = x_max_vis - (x_max_vis - x_min_vis) * 0.15
-                    if x_value >= threshold:
-                        self.label.setAnchor((1, 1))
-                    else:
-                        self.label.setAnchor((0, 1))
+                # Determine horizontal and vertical placement using scene coordinates
+                label_width = self.label.boundingRect().width()
+                label_height = self.label.boundingRect().height()
+
+                # Horizontal: place on the left of mouse if near right edge
+                if pos.x() + label_width + 12 > view_rect.right():
+                    label_x_scene = pos.x() - 12
+                    anchor_x = 1  # Right edge of label at pos.x() - 12
                 else:
-                    self.label.setAnchor((0, 1))
+                    label_x_scene = pos.x() + 12
+                    anchor_x = 0  # Left edge of label at pos.x() + 12
 
-                self.label.setPos(x_value, label_y)
+                # Vertical: normally center around cursor
+                label_y_scene = pos.y()
+                anchor_y = 0.5  # Vertical center of label at pos.y()
+
+                # Adjust vertical if out of bounds
+                if pos.y() - label_height / 2 < top_y:
+                    # Out of top -> place below arrow
+                    label_y_scene = pos.y() + 12
+                    anchor_y = 0  # Top edge of label at pos.y() + 12
+                elif pos.y() + label_height / 2 > bottom_y:
+                    # Out of bottom -> place above arrow
+                    label_y_scene = pos.y() - 12
+                    anchor_y = 1  # Bottom edge of label at pos.y() - 12
+
+                self.label.setAnchor((anchor_x, anchor_y))
+
+                # Convert scene pixel coords to plot data coords for TextItem positioning
+                scene_point = QPointF(label_x_scene, label_y_scene)
+                view_point = self.plot_item.vb.mapSceneToView(scene_point)
+
+                self.label.setPos(view_point.x(), view_point.y())
                 self.label.show()
             else:
                 self.label.hide()

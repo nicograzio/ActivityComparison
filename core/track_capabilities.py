@@ -53,16 +53,11 @@ class TrackCapabilities:
             stats["elevation"]["max"] = max(elevations)
 
         # Slope stats
-        slopes = []
-        from core.analyzer import haversine_distance
-        for i in range(1, len(track.points)):
-            prev, curr = track.points[i-1], track.points[i]
-            dist = haversine_distance(prev, curr)
-            if dist > 0 and prev.altitude is not None and curr.altitude is not None:
-                slopes.append(((curr.altitude - prev.altitude) / dist) * 100)
-        if slopes:
-            stats["slope"]["min"] = min(slopes)
-            stats["slope"]["max"] = max(slopes)
+        from core.analyzer import calculate_slope_range
+        slope_min, slope_max = calculate_slope_range(track)
+        if slope_min is not None and slope_max is not None:
+            stats["slope"]["min"] = slope_min
+            stats["slope"]["max"] = slope_max
 
         # Heart rate stats
         hrs = [p.heart_rate for p in track.points if p.heart_rate is not None]
