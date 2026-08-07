@@ -234,12 +234,19 @@ def calculate_slope_range(track: Track) -> Tuple[Optional[float], Optional[float
     if len(points) < 2:
         return None, None
 
-    altitudes = np.nan_to_num(track.altitudes, nan=0.0)
+    altitudes = _fill_missing_values(track.altitudes)
 
-    # Media mobile su finestra di 11 campioni per smussare il rumore altimetrico del GPS
+    # Media mobile su finestra di 11 campioni per smussare il rumore altimetrico del GPS.
+    # Usiamo padding sui bordi per evitare che l'algoritmo consideri valori esterni pari a zero.
     window_size = 11
-    window = np.ones(window_size) / window_size
-    smoothed_altitudes = np.convolve(altitudes, window, mode='same')
+    if len(altitudes) < window_size:
+        window = np.ones(len(altitudes), dtype=np.float64) / float(len(altitudes))
+        smoothed_altitudes = np.convolve(altitudes, window, mode='same')
+    else:
+        pad_size = window_size // 2
+        padded_altitudes = np.pad(altitudes, pad_size, mode='edge')
+        window = np.ones(window_size, dtype=np.float64) / float(window_size)
+        smoothed_altitudes = np.convolve(padded_altitudes, window, mode='valid')
 
     # Distanze dei segmenti
     distances = haversine_distances_np(track.latitudes, track.longitudes)
