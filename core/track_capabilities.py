@@ -26,6 +26,7 @@ class TrackCapabilities:
         self.has_timestamp: bool = self._has_timestamp(track)
         self.has_speed: bool = self._has_speed(track)
         self.has_heart_rate: bool = self._has_heart_rate(track)
+        self.has_weather: bool = self._has_weather(track)
 
         # Statistiche sintetiche per i tooltip della UI
         self.stats: Dict[str, Dict[str, Optional[float]]] = self._calculate_stats(track)
@@ -103,6 +104,7 @@ class TrackCapabilities:
             "timestamp": self.has_timestamp,
             "speed": self.has_speed,
             "heart_rate": self.has_heart_rate,
+            "weather": self.has_weather,
         }
 
     @staticmethod
@@ -136,3 +138,8 @@ class TrackCapabilities:
     def _has_heart_rate(track: Track) -> bool:
         """Verifica se almeno un punto ha la frequenza cardiaca."""
         return any(p.heart_rate is not None for p in track.points)
+
+    @staticmethod
+    def _has_weather(track: Track) -> bool:
+        """Verifica se la traccia dispone di informazioni meteo (inizio o fine)."""
+        return track.weather_start is not None or track.weather_end is not None

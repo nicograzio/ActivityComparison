@@ -5,9 +5,18 @@ proprietà vettoriali NumPy con caching lazy per velocizzare i calcoli analitici
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import numpy as np
 
+
+@dataclass(slots=True)
+class WeatherInfo:
+    """Informazioni meteo associate a una traccia."""
+    condition: Optional[str] = None
+    temperature: Optional[float] = None
+    wind_speed: Optional[float] = None
+    humidity: Optional[int] = None
+    source: str = "unknown"
 
 @dataclass(slots=True)
 class TrackPoint:
@@ -46,6 +55,8 @@ class Track:
         self.name: str = name
         self.points: List[TrackPoint] = []
         self.start_distance_m: float = start_distance_m
+        self.weather_start: Optional[WeatherInfo] = None
+        self.weather_end: Optional[WeatherInfo] = None
 
         # Cache lazy per le rappresentazioni NumPy
         self._np_latitudes: Optional[np.ndarray] = None

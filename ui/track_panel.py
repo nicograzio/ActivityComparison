@@ -18,15 +18,22 @@ Consumes:
 from pathlib import Path
 from enum import Enum
 
-from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent, QUrl
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip, QSizePolicy
 from PyQt6.QtGui import QPixmap, QColor
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from ui.map_widget import MapWidget
 
 from ui.range_slider import RangeSlider
 from core.gpx_loader import load_gpx
 from core.fit_loader import load_fit
+from core.weather_loader import (
+    pick_datapoints,
+    as_utc,
+    build_weather_url,
+    parse_weather_response,
+)
 from core.analyzer import (
     calculate_speed_range,
     calculate_slope_range,
@@ -129,12 +136,23 @@ class TrackPanel(QWidget):
         self.other_panel = None
         self.sync_scales_enabled = False
 
+        # Stato per il recupero meteo asincrono via QNetworkAccessManager.
+        self.weather_nam = QNetworkAccessManager(self)
+        self.weather_token = 0
+        self.weather_active = False
+        self.weather_outstanding = 0
+        self.weather_requests = []
+        self.weather_start_result = None
+        self.weather_end_result = None
+
+
         # Pre-create icon labels to avoid adding them to layout multiple times
         self.icon_labels = {
             "gps": QLabel(),
             "heart_rate": QLabel(),
             "elevation": QLabel(),
-            "speed": QLabel()
+            "speed": QLabel(),
+            "weather": QLabel()
         }
 
         self._init_ui()
@@ -582,8 +600,18 @@ class TrackPanel(QWidget):
         """
         self._render_visible_track()
 
-    def _set_icon(self, key, icon_name, available, tooltip_title, tooltip_lines):
-        """Helper to set up an icon with color effect and rich text tooltip."""
+    def _set_icon(self, key, icon_name, available, tooltip_title, tooltip_lines, color=None):
+        """Helper to set up an icon with color effect and rich text tooltip.
+
+        Args:
+            key: Chiave dell'etichetta in ``self.icon_labels``.
+            icon_name: Nome del file PNG in ``assets/icons``.
+            available: Se True il colore predefinito è verde, altrimenti rosso.
+            tooltip_title: Titolo in grassetto del tooltip.
+            tooltip_lines: Righe ``(etichetta, valore)`` della tabella del tooltip.
+            color: ``QColor`` opzionale che sovrascrive il colore predefinito
+                (usato ad es. per lo stato "recupero meteo in corso").
+        """
         label = self.icon_labels[key]
         pixmap = QPixmap(f"assets/icons/{icon_name}.png")
         if not pixmap.isNull():
@@ -593,7 +621,9 @@ class TrackPanel(QWidget):
 
         # Apply color effect
         effect = QGraphicsColorizeEffect(label)
-        effect.setColor(QColor("green" if available else "red"))
+        if color is None:
+            color = QColor("green" if available else "red")
+        effect.setColor(color)
         label.setGraphicsEffect(effect)
 
         # Build rich text tooltip
@@ -661,7 +691,168 @@ class TrackPanel(QWidget):
         else:
             speed_lines = [("Stato:", "Assente")]
         self._set_icon("speed", "speed", speed_available, "Velocità", speed_lines)
- 
+
+        # Weather
+        weather_available = summary["weather"]
+        weather_lines = self._weather_lines()
+        self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
+
+    def _weather_lines(self):
+        """Costruisce le righe del tooltip meteo mostrando inizio e fine attività."""
+        lines = []
+        if self.track is None or (self.track.weather_start is None and self.track.weather_end is None):
+            return [("Stato:", "Assente")]
+
+        def info_block(label, weather):
+            if weather is None:
+                return [(label, "Non disponibile")]
+            block = [(label, weather.condition or "Non disponibile")]
+            if weather.temperature is not None:
+                block.append(("Temperatura:", f"{weather.temperature:.0f}°C"))
+            if weather.wind_speed is not None:
+                block.append(("Vento:", f"{weather.wind_speed:.1f} m/s"))
+            if weather.humidity is not None:
+                block.append(("Umidità:", f"{weather.humidity}%"))
+            return block
+
+        lines.extend(info_block("Inizio:", self.track.weather_start))
+        lines.extend(info_block("Fine:", self.track.weather_end))
+        return lines
+
+    def _start_weather_fetch(self):
+        """Avvia (in modo asincrono) il recupero del meteo esterno.
+
+        Usa ``QNetworkAccessManager`` (networking Qt integrato) invece di
+        thread + socket bloccanti, che interferivano con la ``QWebEngineView``
+        della mappa. Qualsiasi fetch precedente non ancora terminato viene
+        annullato (gestione sicura di import multipli).
+        """
+        if self.track is None:
+            return
+
+        start_pt, end_pt = pick_datapoints(self.track)
+        if start_pt is None and end_pt is None:
+            # Nessun punto con timestamp+coordinate: niente da interpellare.
+            self._cancel_weather_fetch()
+            self._update_weather_icon()
+            return
+
+        # Annulla eventuali richieste in corso e avvia un nuovo "ciclo".
+        self.weather_token += 1
+        self._abort_weather_requests()
+        self.weather_active = True
+        self.weather_outstanding = 0
+        self.weather_start_result = None
+        self.weather_end_result = None
+        self._set_weather_pending()
+
+        requested = 0
+        if start_pt is not None:
+            dt = as_utc(start_pt.timestamp)
+            if dt is not None:
+                self._weather_request(start_pt.latitude, start_pt.longitude, dt, is_start=True)
+                requested += 1
+        if end_pt is not None and end_pt is not start_pt:
+            dt = as_utc(end_pt.timestamp)
+            if dt is not None:
+                self._weather_request(end_pt.latitude, end_pt.longitude, dt, is_start=False)
+                requested += 1
+
+        if requested == 0:
+            self.weather_active = False
+            self._update_weather_icon()
+
+    def _abort_weather_requests(self):
+        """Annulla e libera tutte le richieste meteo ancora in corso."""
+        for reply in self.weather_requests:
+            reply.abort()
+        self.weather_requests = []
+        self.weather_outstanding = 0
+
+    def _cancel_weather_fetch(self):
+        """Annulla un eventuale recupero meteo in corso."""
+        self.weather_token += 1
+        self._abort_weather_requests()
+        self.weather_active = False
+
+    def _weather_request(self, lat, lon, dt_utc, is_start):
+        """Avvia una singola richiesta HTTP asincrona verso Open-Meteo."""
+        url = QUrl(build_weather_url(lat, lon, dt_utc))
+        req = QNetworkRequest(url)
+        # Timeout duro di sicurezza: l'icona non resterà mai gialla oltre ~15s.
+        req.setTransferTimeout(15000)
+        reply = self.weather_nam.get(req)
+        reply.setProperty("is_start", is_start)
+        reply.setProperty("dt_utc", dt_utc)
+        reply.setProperty("token", self.weather_token)
+        reply.finished.connect(lambda: self._on_weather_reply(reply))
+        self.weather_requests.append(reply)
+        self.weather_outstanding += 1
+
+    def _on_weather_reply(self, reply):
+        """Gestisce il completamento di una risposta meteo."""
+        if reply in self.weather_requests:
+            self.weather_requests.remove(reply)
+
+        # Risposta di una fetch superata (nuovo import): ignora.
+        if reply.property("token") != self.weather_token:
+            reply.deleteLater()
+            return
+
+        self.weather_outstanding -= 1
+        is_start = reply.property("is_start")
+        dt_utc = reply.property("dt_utc")
+        info = None
+        if reply.error() == QNetworkReply.NetworkError.NoError:
+            info = parse_weather_response(reply.readAll().data(), dt_utc)
+        reply.deleteLater()
+
+        if is_start:
+            self.weather_start_result = info
+        else:
+            self.weather_end_result = info
+
+        if self.weather_outstanding <= 0:
+            self._finish_weather_fetch()
+
+    def _finish_weather_fetch(self):
+        """Applica il meteo recuperato (o il fallimento) e aggiorna l'icona."""
+        self.weather_active = False
+        if self.track is None:
+            self._update_weather_icon()
+            return
+        ws = self.weather_start_result
+        we = self.weather_end_result
+        if ws is None and we is None:
+            # Nessun dato recuperabile: icona rossa con "Assente".
+            self._update_weather_icon()
+            return
+        self.track.weather_start = ws
+        self.track.weather_end = we or ws
+        self.capabilities = TrackCapabilities(self.track)
+        self._update_weather_icon()
+
+    def _set_weather_pending(self):
+        """Mostra l'icona meteo gialla con l'indicazione \"recupero in corso\"."""
+        label = self.icon_labels["weather"]
+        pixmap = QPixmap("assets/icons/weather.png")
+        if not pixmap.isNull():
+            label.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            label.setText("?")
+
+        effect = QGraphicsColorizeEffect(label)
+        effect.setColor(QColor("yellow"))
+        label.setGraphicsEffect(effect)
+        label.setToolTip("Recupero dei dati meteo in corso...")
+        label.show()
+
+    def _update_weather_icon(self):
+        """Aggiorna solo l'icona meteo con i dati correnti della traccia."""
+        weather_available = self.capabilities.summary["weather"]
+        weather_lines = self._weather_lines()
+        self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
+
     def eventFilter(self, obj, event):
         """Show icon tooltips immediately on hover."""
         if obj in self.icon_labels.values():
@@ -771,11 +962,16 @@ class TrackPanel(QWidget):
         if not filename:
             return
         try:
+            # Annulla eventuale recupero meteo ancora in corso dal file precedente.
+            self._cancel_weather_fetch()
             ext = Path(filename).suffix.lower()
             self.track = load_gpx(filename) if ext == ".gpx" else load_fit(filename)
             self.capabilities = TrackCapabilities(self.track)
             self.file_label.setText(f"  {Path(filename).name}")
             self.show_summary()
+            # Se il file non fornisce dati meteo, li recupera da API esterna in background.
+            if not self.capabilities.summary["weather"]:
+                self._start_weather_fetch()
             self.color_mode.setEnabled(True)
             self.x_axis_combo.setEnabled(True)
             self.scale_mode_button.setEnabled(True)
