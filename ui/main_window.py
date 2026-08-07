@@ -53,7 +53,6 @@ class MainWindow(QMainWindow):
         self._syncing_maps = False
         self._sync_scales_enabled = False
         self._syncing_scales = False
-        self._syncing_x_axis = False
         self._graphs_visible = True
         # Store the original scale settings when sync is enabled for restoration when disabled
         self._left_sync_backup = None
@@ -88,13 +87,13 @@ class MainWindow(QMainWindow):
         self.left_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.left_panel, mode)
         )
-        self.left_panel.x_axis_mode_changed.connect(
-            lambda mode: self._on_x_axis_mode_changed(self.left_panel, mode)
-        )
 
         # Connect graph hover signals to map synchronization
         self.left_graph.point_hovered.connect(
             lambda idx, x, y: self._on_graph_point_hovered(self.left_panel, idx, x, y)
+        )
+        self.left_graph.x_axis_changed.connect(
+            lambda _: self.left_panel.refresh_visible_track()
         )
 
         self.right_panel.visible_track_changed.connect(
@@ -110,13 +109,13 @@ class MainWindow(QMainWindow):
         self.right_panel.scale_mode_changed.connect(
             lambda mode: self._on_scale_mode_changed(self.right_panel, mode)
         )
-        self.right_panel.x_axis_mode_changed.connect(
-            lambda mode: self._on_x_axis_mode_changed(self.right_panel, mode)
-        )
 
         # Connect graph hover signals to map synchronization
         self.right_graph.point_hovered.connect(
             lambda idx, x, y: self._on_graph_point_hovered(self.right_panel, idx, x, y)
+        )
+        self.right_graph.x_axis_changed.connect(
+            lambda _: self.right_panel.refresh_visible_track()
         )
 
         self.left_panel.color_mode.currentTextChanged.connect(
@@ -454,17 +453,6 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_scales = False
 
-    def _on_x_axis_mode_changed(self, panel, mode):
-        """Sync X axis mode between panels."""
-        if self._syncing_x_axis:
-            return
-        self._syncing_x_axis = True
-        try:
-            target_panel = self.right_panel if panel is self.left_panel else self.left_panel
-            target_panel.x_axis_combo.setCurrentText(mode)
-        finally:
-            self._syncing_x_axis = False
-
     def _on_color_mode_changed(self, panel, mode):
         """Handle color mode (metric) changes."""
         if not self._sync_scales_enabled or self._syncing_scales:
@@ -519,7 +507,7 @@ class MainWindow(QMainWindow):
             if hasattr(track, 'start_distance_m'):
                 start_dist = track.start_distance_m
 
-        x_mode = panel.x_axis_combo.currentText()
+        x_mode = graph.x_axis_combo.currentText()
         x_values, speeds, altitudes, heart_rates = calculate_track_series(
             track, 
             x_axis_mode=x_mode, 

@@ -10,7 +10,7 @@ Consumed by:
 """
 
 from PyQt6.QtCore import QSize, pyqtSignal, Qt, QPoint, QPointF
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QComboBox
 import pyqtgraph as pg
 import numpy as np
 
@@ -53,6 +53,8 @@ class GraphPanel(QWidget):
 
     # Signal emitted when user hovers over the graph: (index, x_value, y_value)
     point_hovered = pyqtSignal(int, float, float)
+    # Signal emitted when the X axis mode combo changes: ("Tempo" or "Distanza")
+    x_axis_changed = pyqtSignal(str)
 
     def __init__(self):
         """Create the graph container and initialize the PyQtGraph widget."""
@@ -110,6 +112,18 @@ class GraphPanel(QWidget):
         self.legend_layout.addWidget(self.cb_altitude)
         self.legend_layout.addWidget(self.cb_speed)
         self.legend_layout.addWidget(self.cb_hr)
+
+        # Asse X: combobox spostata sulla destra del grafico (senza etichetta).
+        # Vivendo dentro il pannello del grafico, viene nascosto automaticamente
+        # insieme ad esso quando si nascondono i grafici.
+        self.legend_layout.addStretch(1)
+        self.x_axis_combo = QComboBox()
+        self.x_axis_combo.addItems(["Tempo", "Distanza"])
+        self.x_axis_combo.setEnabled(False)
+        self.x_axis_combo.setToolTip("Scegli cosa mostrare sull'asse X del grafico")
+        self.x_axis_combo.currentTextChanged.connect(self.x_axis_changed.emit)
+        self.legend_layout.addWidget(self.x_axis_combo)
+
         layout.addWidget(self.legend_widget)
         self.legend_widget.hide() # Hide until data is loaded
 
@@ -292,6 +306,13 @@ class GraphPanel(QWidget):
         self.cb_altitude.setVisible(self._has_altitude)
         self.cb_speed.setVisible(self._has_speed)
         self.cb_hr.setVisible(self._has_hr)
+
+        # Enable and sync the X axis combo with the current mode
+        self.x_axis_combo.setEnabled(True)
+        if self.x_axis_combo.currentText() != x_mode:
+            self.x_axis_combo.blockSignals(True)
+            self.x_axis_combo.setCurrentText(x_mode)
+            self.x_axis_combo.blockSignals(False)
 
         # Update X axis type and label
         if x_mode == "Tempo":
@@ -501,5 +522,6 @@ class GraphPanel(QWidget):
         self.cb_altitude.setVisible(False)
         self.cb_speed.setVisible(False)
         self.cb_hr.setVisible(False)
+        self.x_axis_combo.setEnabled(False)
         
         self._hide_interactive_elements()

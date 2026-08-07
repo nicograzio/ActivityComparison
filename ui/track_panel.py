@@ -100,7 +100,6 @@ class TrackPanel(QWidget):
 
     activity_loaded = pyqtSignal(object)
     visible_track_changed = pyqtSignal(object)
-    x_axis_mode_changed = pyqtSignal(str)
     manual_limits_changed = pyqtSignal(float, float)
     scale_mode_changed = pyqtSignal(object)
 
@@ -231,14 +230,7 @@ class TrackPanel(QWidget):
         self.range_label.setMinimumWidth(280)
         range_layout.addWidget(self.range_label)
         range_layout.addStretch()
-        
-        range_layout.addWidget(QLabel("Asse X:"))
-        self.x_axis_combo = QComboBox()
-        self.x_axis_combo.addItems(["Tempo", "Distanza"])
-        self.x_axis_combo.setEnabled(False)
-        self.x_axis_combo.currentTextChanged.connect(self._on_x_axis_changed)
-        range_layout.addWidget(self.x_axis_combo)
-        
+
         layout.addLayout(range_layout)
         
         self.range_slider = RangeSlider()
@@ -443,11 +435,6 @@ class TrackPanel(QWidget):
         if minimum is None or maximum is None or minimum >= maximum:
             return
         self.apply_scale_mode(ScaleMode.MANUAL, minimum, maximum)
-
-    def _on_x_axis_changed(self, mode):
-        """Handle X axis mode change."""
-        self.x_axis_mode_changed.emit(mode)
-        self._render_visible_track()
 
     def refresh_visible_track(self):
         """Force a redraw of the visible portion of the track.
@@ -973,7 +960,6 @@ class TrackPanel(QWidget):
             if not self.capabilities.summary["weather"]:
                 self._start_weather_fetch()
             self.color_mode.setEnabled(True)
-            self.x_axis_combo.setEnabled(True)
             self.scale_mode_button.setEnabled(True)
             self.color_mode.clear()
             self.color_mode.addItems(self.capabilities.available_modes)
