@@ -1,39 +1,31 @@
-"""GPX import helpers.
+"""Modulo per l'importazione di file GPX.
 
-This module turns a GPX file into the internal ``Track`` model used by the
-rest of the application.
-
-Called by:
-    - ``ui.track_panel.TrackPanel.import_file``
+Converte le attività GPX nel modello dati interno ``Track``.
 """
 
 import gpxpy
-
 from core.track import Track, TrackPoint
 
 
-def load_gpx(path):
-    """Load a GPX file and return a ``Track`` instance.
-
-    Called by:
-        - ``TrackPanel.import_file`` when the chosen file has a ``.gpx``
-          extension.
+def load_gpx(path: str) -> Track:
+    """Carica un file GPX e restituisce un'istanza di ``Track``.
 
     Args:
-        path: Path to the GPX file.
+        path: Percorso del file GPX.
 
     Returns:
-        Track: Parsed activity.
+        Track: Istanza popolata con la traccia caricata.
     """
     track = Track(path)
 
     with open(path, "r", encoding="utf-8") as file:
         gpx = gpxpy.parse(file)
 
+    points = []
     for gpx_track in gpx.tracks:
         for segment in gpx_track.segments:
             for point in segment.points:
-                track.add_point(
+                points.append(
                     TrackPoint(
                         latitude=point.latitude,
                         longitude=point.longitude,
@@ -42,4 +34,6 @@ def load_gpx(path):
                     )
                 )
 
+    track.points = points
+    track.invalidate_cache()
     return track

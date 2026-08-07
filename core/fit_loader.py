@@ -1,38 +1,29 @@
-"""FIT import helpers.
+"""Modulo per l'importazione di file FIT.
 
-This module parses FIT activities into the internal ``Track`` model.
-
-Called by:
-    - ``ui.track_panel.TrackPanel.import_file``
+Converte le attività FIT nel modello dati interno ``Track``.
 """
 
 from fitparse import FitFile
-
 from core.track import Track, TrackPoint
 
 
-def load_fit(path):
-    """Load a FIT file and return a ``Track`` instance.
-
-    Called by:
-        - ``TrackPanel.import_file`` when the selected file has a ``.fit``
-          extension.
+def load_fit(path: str) -> Track:
+    """Carica un file FIT e restituisce un'istanza di ``Track``.
 
     Args:
-        path: Path to the FIT file.
+        path: Percorso del file FIT.
 
     Returns:
-        Track: Parsed activity.
+        Track: Istanza popolata con la traccia caricata.
     """
     track = Track(path)
-
     fit = FitFile(path)
+    deg_factor = 180.0 / (2**31)
 
+    points = []
     for record in fit.get_messages("record"):
-        data = {}
-
-        for field in record:
-            data[field.name] = field.value
+        # get_values() restituisce direttamente un dizionario senza cicli manuali sui campi
+        data = record.get_values()
 
         latitude = data.get("position_lat")
         longitude = data.get("position_long")
@@ -40,10 +31,13 @@ def load_fit(path):
         if latitude is None or longitude is None:
             continue
 
-        latitude = latitude * (180 / 2**31)
-        longitude = longitude * (180 / 2**31)
+        latitude *= deg_factor
+        longitude *= deg_factor
 
-        altitude = data.get("altitude") or data.get("enhanced_altitude")
+        altitude = data.get("altitude")
+        if altitude is None:
+            altitude = data.get("enhanced_altitude")
+
         point = TrackPoint(
             latitude=latitude,
             longitude=longitude,
@@ -52,7 +46,9 @@ def load_fit(path):
             speed=data.get("speed"),
             heart_rate=data.get("heart_rate"),
         )
+        points.append(point)
 
-        track.add_point(point)
-
+    track.points = points
+    track.invalidate_cache()
     return track
+

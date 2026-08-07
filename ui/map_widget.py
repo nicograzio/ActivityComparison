@@ -278,6 +278,10 @@ class MapWidget(QWidget):
         self.view.setHtml(content, QUrl("http://localhost/"))
 
     def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
+        """Disegna la traccia sulla mappa Folium/Leaflet.
+
+        Ottimizzato per ridurre il carico di calcolo durante la preparazione dei dati JSON.
+        """
         if not self._ready:
             self._pending_draw = (track, color_mode, minimum, maximum)
             return
@@ -288,33 +292,40 @@ class MapWidget(QWidget):
             self._points_list = []
             return
 
-        # Store points for later reference
         self._points_list = points
-
         points_js = []
-        for i in range(len(points)):
-            p = points[i]
-            color = "blue"
-            if color_mode != "Nessuna" and i < len(points) - 1:
-                p1 = p
-                p2 = points[i + 1]
-                val = None
-                if color_mode == "Velocità":
-                    val = calculate_point_speed(p1, p2)
-                elif color_mode == "Pendenza":
-                    dist = haversine_distance(p1, p2)
-                    if dist > 0 and p1.altitude is not None and p2.altitude is not None:
-                        val = ((p2.altitude - p1.altitude) / dist) * 100
+        
+        # Pre-calcoliamo i valori per la colorazione se necessario
+        values = []
+        if color_mode != "Nessuna":
+            if color_mode == "Velocità":
+                for i in range(len(points) - 1):
+                    values.append(calculate_point_speed(points[i], points[i+1]))
+            elif color_mode == "Pendenza":
+                for i in range(len(points) - 1):
+                    dist = haversine_distance(points[i], points[i+1])
+                    if dist > 0 and points[i].altitude is not None and points[i+1].altitude is not None:
+                        values.append(((points[i+1].altitude - points[i].altitude) / dist) * 100)
+                    else:
+                        values.append(None)
+            elif color_mode == "Frequenza cardiaca":
+                for i in range(len(points) - 1):
+                    hr = points[i+1].heart_rate
+                    values.append(float(hr) if hr is not None else None)
 
-                color = "#808080"
+        # Costruzione lista JSON ottimizzata
+        for i, p in enumerate(points):
+            color = "blue"
+            if color_mode != "Nessuna" and i < len(values):
+                val = values[i]
+                color = "#808080"  # Grigio di default per dati mancanti
                 if val is not None:
                     color_q = value_to_color(val, minimum or 0, maximum or 0)
                     color = color_q.name()
-
+            
             points_js.append([p.latitude, p.longitude, color])
 
         js_data = json.dumps(points_js)
-        # We always fit bounds when drawing the track to make sure the view matches
         self.view.page().runJavaScript(f"if (window.drawTrack) window.drawTrack({js_data}, true);")
 
     def get_view_state(self) -> dict[str, Any]:

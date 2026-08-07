@@ -1,94 +1,85 @@
-"""Inspect which activity metrics are available in a track.
+"""Ispeziona ed estrae le capacità e le statistiche disponibili in una traccia.
 
-The UI uses this module to populate the color-mode combo box and to summarize
-which data fields are present in the loaded activity.
-
-Called by:
-    - ``ui.track_panel.TrackPanel.import_file``
-    - ``ui.track_panel.TrackPanel.show_summary``
+Fornisce alla UI le modalità di colorazione disponibili e le statistiche generali
+sulle metriche (altitudine, pendenza, frequenza cardiaca, velocità).
 """
 
+from typing import Dict, List, Any, Optional
+import numpy as np
+
+from core.track import Track
+from core.analyzer import calculate_point_speed, calculate_slope_range
+
+
 class TrackCapabilities:
-    """Snapshot of the data fields available in a track.
+    """Istantanea dei campi e delle metriche disponibili in una traccia."""
 
-    Called by:
-        - ``TrackPanel.import_file`` after loading a GPX/FIT file
-    """
-
-    def __init__(self, track):
-        """Build a capability snapshot from a track.
+    def __init__(self, track: Track) -> None:
+        """Costruisce un'istantanea delle capacità a partire da una traccia.
 
         Args:
-            track: Track to inspect.
+            track: Istanza di ``Track`` da ispezionare.
         """
-        self.points = len(track.points)
-        self.has_position = self._has_position(track)
-        self.has_elevation = self._has_elevation(track)
-        self.has_timestamp = self._has_timestamp(track)
-        self.has_speed = self._has_speed(track)
-        self.has_heart_rate = self._has_heart_rate(track)
+        self.points: int = len(track.points)
+        self.has_position: bool = self._has_position(track)
+        self.has_elevation: bool = self._has_elevation(track)
+        self.has_timestamp: bool = self._has_timestamp(track)
+        self.has_speed: bool = self._has_speed(track)
+        self.has_heart_rate: bool = self._has_heart_rate(track)
 
-        # Statistics for tooltips
-        self.stats = self._calculate_stats(track)
+        # Statistiche sintetiche per i tooltip della UI
+        self.stats: Dict[str, Dict[str, Optional[float]]] = self._calculate_stats(track)
 
-    def _calculate_stats(self, track):
-        """Calculate statistics for tooltips."""
-        import numpy as np
-        from core.analyzer import calculate_point_speed
-
-        stats = {
+    def _calculate_stats(self, track: Track) -> Dict[str, Dict[str, Optional[float]]]:
+        """Calcola le statistiche di min, max e media per le metriche con NumPy."""
+        stats: Dict[str, Dict[str, Optional[float]]] = {
             "elevation": {"min": None, "max": None},
             "slope": {"min": None, "max": None},
             "heart_rate": {"min": None, "max": None, "avg": None},
-            "speed": {"min": None, "max": None, "avg": None}
+            "speed": {"min": None, "max": None, "avg": None},
         }
 
         if not track.points:
             return stats
 
-        # Elevation stats
-        elevations = [p.altitude for p in track.points if p.altitude is not None]
-        if elevations:
-            stats["elevation"]["min"] = min(elevations)
-            stats["elevation"]["max"] = max(elevations)
+        # 1. Altitudine (usando l'array NumPy della traccia)
+        alts = track.altitudes
+        valid_alts = alts[~np.isnan(alts)]
+        if len(valid_alts) > 0:
+            stats["elevation"]["min"] = float(np.min(valid_alts))
+            stats["elevation"]["max"] = float(np.max(valid_alts))
 
-        # Slope stats
-        from core.analyzer import calculate_slope_range
+        # 2. Pendenza (utilizzando la funzione del modulo analyzer)
         slope_min, slope_max = calculate_slope_range(track)
         if slope_min is not None and slope_max is not None:
             stats["slope"]["min"] = slope_min
             stats["slope"]["max"] = slope_max
 
-        # Heart rate stats
-        hrs = [p.heart_rate for p in track.points if p.heart_rate is not None]
-        if hrs:
-            stats["heart_rate"]["min"] = min(hrs)
-            stats["heart_rate"]["max"] = max(hrs)
-            stats["heart_rate"]["avg"] = sum(hrs) / len(hrs)
+        # 3. Frequenza cardiaca
+        hrs = track.heart_rates
+        valid_hrs = hrs[~np.isnan(hrs)]
+        if len(valid_hrs) > 0:
+            stats["heart_rate"]["min"] = float(np.min(valid_hrs))
+            stats["heart_rate"]["max"] = float(np.max(valid_hrs))
+            stats["heart_rate"]["avg"] = float(np.mean(valid_hrs))
 
-        # Speed stats
+        # 4. Velocità
         speeds = []
         for i in range(1, len(track.points)):
-            s = calculate_point_speed(track.points[i-1], track.points[i])
+            s = calculate_point_speed(track.points[i - 1], track.points[i])
             if s is not None:
                 speeds.append(s)
+
         if speeds:
-            stats["speed"]["min"] = min(speeds)
-            stats["speed"]["max"] = max(speeds)
-            stats["speed"]["avg"] = sum(speeds) / len(speeds)
+            stats["speed"]["min"] = float(min(speeds))
+            stats["speed"]["max"] = float(max(speeds))
+            stats["speed"]["avg"] = float(sum(speeds) / len(speeds))
 
         return stats
 
     @property
-    def available_modes(self):
-        """List the color modes the UI can offer.
-
-        Called by:
-            - ``TrackPanel.import_file`` when populating the combobox
-
-        Returns:
-            list[str]: Human readable mode labels.
-        """
+    def available_modes(self) -> List[str]:
+        """Elenco delle modalità di visualizzazione/colorazione disponibili per la UI."""
         modes = ["Nessuna"]
 
         if self.has_speed:
@@ -103,15 +94,8 @@ class TrackCapabilities:
         return modes
 
     @property
-    def summary(self):
-        """Return the compact capability summary shown in the UI.
-
-        Called by:
-            - ``TrackPanel.show_summary``
-
-        Returns:
-            dict[str, object]: Dictionary of supported fields.
-        """
+    def summary(self) -> Dict[str, Any]:
+        """Sommario compatto delle capacità per l'interfaccia utente."""
         return {
             "points": self.points,
             "gps": self.has_position,
@@ -122,62 +106,33 @@ class TrackCapabilities:
         }
 
     @staticmethod
-    def _has_position(track):
-        """Check whether every point has latitude and longitude.
-
-        Returns:
-            bool: True if all points have coordinates.
-        """
-        return all(
-            p.latitude is not None and p.longitude is not None
-            for p in track.points
+    def _has_position(track: Track) -> bool:
+        """Verifica se la traccia ha coordinate GPS valide per tutti i punti."""
+        return len(track.points) > 0 and all(
+            p.latitude is not None and p.longitude is not None for p in track.points
         )
 
     @staticmethod
-    def _has_elevation(track):
-        """Check whether at least one point has altitude.
-
-        Returns:
-            bool: True if altitude is available.
-        """
+    def _has_elevation(track: Track) -> bool:
+        """Verifica se almeno un punto ha l'altitudine."""
         return any(p.altitude is not None for p in track.points)
 
     @staticmethod
-    def _has_timestamp(track):
-        """Check whether at least one point has a timestamp.
-
-        Returns:
-            bool: True if a timestamp is available.
-        """
+    def _has_timestamp(track: Track) -> bool:
+        """Verifica se almeno un punto ha il timestamp."""
         return any(p.timestamp is not None for p in track.points)
 
     @staticmethod
-    def _has_speed(track):
-        """Check whether speed can be read or derived for the track.
-
-        Returns:
-            bool: True if speed is recorded or derivable.
-        """
-        # La velocità può essere già presente nel file (FIT/GPX con extension speed)
-        # oppure può essere calcolata dalla sequenza GPS quando sono disponibili timestamp.
-        has_recorded_speed = any(p.speed is not None for p in track.points)
-
-        if has_recorded_speed:
+    def _has_speed(track: Track) -> bool:
+        """Verifica se la velocità è presente o calcolabile."""
+        if any(p.speed is not None for p in track.points):
             return True
 
-        return (
-            any(p.timestamp is not None for p in track.points)
-            and all(
-                p.latitude is not None and p.longitude is not None
-                for p in track.points
-            )
+        return any(p.timestamp is not None for p in track.points) and all(
+            p.latitude is not None and p.longitude is not None for p in track.points
         )
 
     @staticmethod
-    def _has_heart_rate(track):
-        """Check whether at least one point has heart rate.
-
-        Returns:
-            bool: True if heart rate is available.
-        """
+    def _has_heart_rate(track: Track) -> bool:
+        """Verifica se almeno un punto ha la frequenza cardiaca."""
         return any(p.heart_rate is not None for p in track.points)

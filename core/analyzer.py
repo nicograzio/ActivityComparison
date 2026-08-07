@@ -1,73 +1,80 @@
-"""Core numerical helpers for activity comparison.
+"""Modulo per l'analisi numerica delle tracce e calcolo delle metriche.
 
-This module centralizes distance, speed, slope, distance profiles and track
-trimming so that UI widgets only orchestrate the flow.
-
-Called by:
-    - ``ui.track_panel.TrackPanel`` for rendering and trim updates
-    - ``ui.main_window.MainWindow`` for graph generation and scale sync
-    - map renderers for segment coloring
-
-Consumes:
-    - ``core.track.Track`` and ``core.track.TrackPoint``
+Centralizza i calcoli di distanza (Haversine), velocità, pendenza e la gestione
+dei profili per grafici e mappe, sfruttando NumPy per le prestazioni.
 """
 
 import math
 from datetime import timedelta
+from typing import List, Tuple, Optional, Any
+import numpy as np
 
 from core.track import Track, TrackPoint
 
 
-def haversine_distance(a, b):
-    """Return the geodesic distance between two points in meters.
-
-    Called by:
-        - ``calculate_point_speed``
-        - ``calculate_slope_range``
-        - ``track_distance_profile``
-        - ``trim_track_by_distance``
-        - map renderers when evaluating segment values
+def haversine_distance(a: Any, b: Any) -> float:
+    """Calcola la distanza geodesica in metri tra due punti GPS singoli.
 
     Args:
-        a: First point with ``latitude`` and ``longitude``.
-        b: Second point with ``latitude`` and ``longitude``.
+        a: Primo punto con attributi ``latitude`` e ``longitude``.
+        b: Secondo punto con attributi ``latitude`` e ``longitude``.
 
     Returns:
-        float: Distance in meters.
+        float: Distanza in metri.
     """
-    radius = 6371000
+    radius = 6371000.0
     lat1 = math.radians(a.latitude)
     lat2 = math.radians(b.latitude)
     dlat = math.radians(b.latitude - a.latitude)
     dlon = math.radians(b.longitude - a.longitude)
 
-    value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+    val = math.sin(dlat / 2.0) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2
+    val = max(0.0, min(1.0, val))
+    return radius * 2.0 * math.atan2(math.sqrt(val), math.sqrt(1.0 - val))
 
 
-def calculate_point_speed(previous, current):
-    """Calculate the speed of a segment in km/h.
-
-    If the source already provides speed and it is non-negative, that value is
-    reused. Otherwise speed is derived from distance and timestamp delta.
-
-    Called by:
-        - ``calculate_speed_series``
-        - ``calculate_speed_range``
-        - ``ui.map_widget.MapWidget.get_segment_value``
-        - ``ui.vector_map_widget.VectorMapWidget._segment_value``
+def haversine_distances_np(lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+    """Calcola in modo vettoriale le distanze (in metri) tra punti adiacenti.
 
     Args:
-        previous: Previous track point.
-        current: Current track point.
+        lats: Array NumPy delle latitudini in gradi decimali.
+        lons: Array NumPy delle longitudini in gradi decimali.
 
     Returns:
-        float | None: Speed in km/h, or ``None`` when it cannot be computed.
+        np.ndarray: Array di lunghezza N-1 con le distanze dei segmenti.
+    """
+    if len(lats) < 2:
+        return np.array([], dtype=np.float64)
+
+    radius = 6371000.0
+    lats_rad = np.radians(lats)
+    lons_rad = np.radians(lons)
+
+    dlat = lats_rad[1:] - lats_rad[:-1]
+    dlon = lons_rad[1:] - lons_rad[:-1]
+
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lats_rad[:-1]) * np.cos(lats_rad[1:]) * np.sin(dlon / 2.0) ** 2
+    np.clip(a, 0.0, 1.0, out=a)
+    return radius * 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+
+
+def calculate_point_speed(previous: TrackPoint, current: TrackPoint) -> Optional[float]:
+    """Calcola la velocità di un segmento in km/h.
+
+    Se la velocità è già disponibile sul punto corrente, viene riutilizzata (* 3.6).
+    Altrimenti viene derivata dalla distanza e dalla differenza di tempo.
+
+    Args:
+        previous: Punto precedente della traccia.
+        current: Punto corrente della traccia.
+
+    Returns:
+        Optional[float]: Velocità in km/h oppure ``None`` se non calcolabile.
     """
     speed = getattr(current, "speed", None)
 
     if isinstance(speed, (int, float)) and speed >= 0:
-        return speed * 3.6
+        return float(speed * 3.6)
 
     time_a = getattr(previous, "timestamp", None)
     time_b = getattr(current, "timestamp", None)
@@ -80,217 +87,178 @@ def calculate_point_speed(previous, current):
         if seconds <= 0:
             return None
 
-        distance = haversine_distance(previous, current)
-        if distance <= 0:
+        dist = haversine_distance(previous, current)
+        if dist <= 0:
             return None
 
-        return (distance / seconds) * 3.6
+        return float((dist / seconds) * 3.6)
     except Exception:
         return None
 
 
-def calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=None, start_distance_m=0.0):
-    """Build the series data for the graph widget.
+def track_distance_profile(track: Track) -> Tuple[List[float], float]:
+    """Restituisce le distanze cumulative dei punti e la distanza totale in metri.
 
     Args:
-        track: Track to convert.
-        x_axis_mode: "Tempo" or "Distanza".
-        first_timestamp: Original start timestamp of the full track to calculate real time offset.
-        start_distance_m: Original start distance offset in meters.
+        track: Traccia da analizzare.
 
     Returns:
-        tuple[list[float], list[float], list[float], list[float]]: X-axis samples, speeds, altitudes, and heart rates.
+        Tuple[List[float], float]: Campioni di distanza cumulativa e totale in metri.
+    """
+    points = getattr(track, "points", [])
+    if len(points) < 2:
+        return [0.0] * len(points), 0.0
+
+    segment_distances = haversine_distances_np(track.latitudes, track.longitudes)
+    cum_distances = np.zeros(len(points), dtype=np.float64)
+    cum_distances[1:] = np.cumsum(segment_distances)
+
+    total_distance = float(cum_distances[-1])
+    return cum_distances.tolist(), total_distance
+
+
+
+def calculate_track_series(
+    track: Track,
+    x_axis_mode: str = "Tempo",
+    first_timestamp: Optional[Any] = None,
+    start_distance_m: float = 0.0,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
+    """Genera le serie di dati per i grafici della UI (asse X, velocità, altitudine, frequenza cardiaca).
+
+    Args:
+        track: Traccia da convertire.
+        x_axis_mode: Modalità asse X ("Tempo" o "Distanza").
+        first_timestamp: Timestamp di inizio della traccia completa.
+        start_distance_m: Offset iniziale di distanza in metri.
+
+    Returns:
+        Tuple[List[float], List[float], List[float], List[float]]:
+            Valori asse X, velocità (km/h), altitudini (m), frequenze cardiache (bpm).
     """
     points = getattr(track, "points", [])
     if not points:
         return [], [], [], []
 
-    x_values = []
-    speeds = []
-    altitudes = []
-    heart_rates = []
+    n_points = len(points)
 
-    # Calculate distance profile for the current segment to handle relative distances
-    segment_distances, _ = track_distance_profile(track)
+    # 1. Calcolo Velocità per ciascun punto
+    speeds = np.zeros(n_points, dtype=np.float64)
+    if n_points > 1:
+        spd0 = calculate_point_speed(points[0], points[1])
+        speeds[0] = spd0 if spd0 is not None else 0.0
 
-    for index in range(len(points)):
-        current = points[index]
-        
-        # Speed calculation
-        if index == 0:
-            if len(points) > 1:
-                speed = calculate_point_speed(points[0], points[1])
-            else:
-                speed = getattr(current, "speed", 0.0)
-                if speed is not None: speed *= 3.6
-        else:
-            speed = calculate_point_speed(points[index-1], current)
-        
-        speeds.append(float(speed) if speed is not None else 0.0)
+        for i in range(1, n_points):
+            spd = calculate_point_speed(points[i - 1], points[i])
+            speeds[i] = spd if spd is not None else 0.0
+    else:
+        spd0 = getattr(points[0], "speed", 0.0)
+        speeds[0] = (spd0 * 3.6) if spd0 is not None else 0.0
 
-        # Altitude
-        alt = getattr(current, "altitude", None)
-        altitudes.append(float(alt) if alt is not None else None)
+    # 2. Estrazione ed eventuale riempimento di Altitudine e Frequenza Cardiaca
+    alt_arr = track.altitudes
+    hr_arr = track.heart_rates
 
-        # Heart rate
-        hr = getattr(current, "heart_rate", None)
-        heart_rates.append(int(hr) if hr is not None else None)
+    cleaned_altitudes = _fill_missing_values(alt_arr)
+    cleaned_heart_rates = _fill_missing_values(hr_arr)
 
-        # X-axis value calculation
-        if x_axis_mode == "Distanza":
-            # Real distance = offset + distance within this segment
-            x_values.append((start_distance_m + segment_distances[index]) / 1000.0)
-        else:
-            # Time calculation
-            current_timestamp = getattr(current, "timestamp", None)
-            if first_timestamp is not None and current_timestamp is not None:
+    # 3. Calcolo dell'asse X
+    if x_axis_mode == "Distanza":
+        segment_distances, _ = track_distance_profile(track)
+        x_values = [(start_distance_m + dist) / 1000.0 for dist in segment_distances]
+    else:
+        x_values = []
+        for index in range(n_points):
+            ts = getattr(points[index], "timestamp", None)
+            if first_timestamp is not None and ts is not None:
                 try:
-                    elapsed = (current_timestamp - first_timestamp).total_seconds()
+                    elapsed = (ts - first_timestamp).total_seconds()
                     x_values.append(float(elapsed))
                 except Exception:
                     x_values.append(float(index))
             else:
                 x_values.append(float(index))
 
-    # Handle missing/None values gracefully for altitude and heart rate by forward/backward filling
-    # checking if they are present at all.
-    has_altitude = any(alt is not None for alt in altitudes)
-    cleaned_altitudes = []
-    if has_altitude:
-        last_valid_alt = 0.0
-        for alt in altitudes:
-            if alt is not None:
-                last_valid_alt = alt
-                break
-        for alt in altitudes:
-            if alt is not None:
-                last_valid_alt = alt
-            cleaned_altitudes.append(last_valid_alt)
-    else:
-        cleaned_altitudes = [0.0] * len(points)
-
-    has_heart_rate = any(hr is not None for hr in heart_rates)
-    cleaned_heart_rates = []
-    if has_heart_rate:
-        last_valid_hr = 0.0
-        for hr in heart_rates:
-            if hr is not None:
-                last_valid_hr = float(hr)
-                break
-        for hr in heart_rates:
-            if hr is not None:
-                last_valid_hr = float(hr)
-            cleaned_heart_rates.append(last_valid_hr)
-    else:
-        cleaned_heart_rates = [0.0] * len(points)
-
-    return x_values, speeds, cleaned_altitudes, cleaned_heart_rates
+    return x_values, speeds.tolist(), cleaned_altitudes.tolist(), cleaned_heart_rates.tolist()
 
 
-def calculate_speed_series(track):
-    """Build the time/speed series used by the graph widgets (legacy wrapper)."""
+def _fill_missing_values(arr: np.ndarray) -> np.ndarray:
+    """Helper interno per il riempimento di valori NaN (forward & backward fill)."""
+    valid_mask = ~np.isnan(arr)
+    if not np.any(valid_mask):
+        return np.zeros(len(arr), dtype=np.float64)
+
+    out = arr.copy()
+    valid_indices = np.where(valid_mask)[0]
+
+    # Riempimento iniziale (backward fill)
+    first_valid_idx = valid_indices[0]
+    out[:first_valid_idx] = out[first_valid_idx]
+
+    # Riempimento in avanti (forward fill)
+    for i in range(first_valid_idx + 1, len(out)):
+        if np.isnan(out[i]):
+            out[i] = out[i - 1]
+
+    return out
+
+
+def calculate_speed_series(track: Track) -> Tuple[List[float], List[float]]:
+    """Costruisce le serie di tempo/velocità per il widget del grafico."""
     first_ts = track.points[0].timestamp if track.points else None
     x_val, spd, _, _ = calculate_track_series(track, x_axis_mode="Tempo", first_timestamp=first_ts)
     return x_val, spd
 
 
-def calculate_speed_range(track):
-    """Return the min/max speed of a track in km/h.
-
-    Called by:
-        - ``ui.track_panel.TrackPanel._current_scale_limits``
-        - ``ui.track_panel.TrackPanel.visible_speed_range``
-
-    Args:
-        track: Track to inspect.
-
-    Returns:
-        tuple[float | None, float | None]: Minimum and maximum speed.
-    """
-    values = []
-
-    for i in range(1, len(track.points)):
-        speed = calculate_point_speed(track.points[i - 1], track.points[i])
-        if speed is not None:
-            values.append(speed)
-
-    if not values:
-        return None, None
-
-    return min(values), max(values)
-
-
-def calculate_slope_range(track):
-    """Return the min/max slope percentage for a track.
-
-    Called by:
-        - ``ui.track_panel.TrackPanel._current_scale_limits``
-
-    Args:
-        track: Track to inspect.
-
-    Returns:
-        tuple[float | None, float | None]: Minimum and maximum slope.
-    """
+def calculate_speed_range(track: Track) -> Tuple[Optional[float], Optional[float]]:
+    """Restituisce la velocità minima e massima di una traccia in km/h."""
     points = getattr(track, "points", [])
     if len(points) < 2:
         return None, None
 
-    # Apply a moving average window to smooth altitude data and reduce noise
-    window_size = 11
-    altitudes = [getattr(p, "altitude", 0) or 0 for p in points]
-    smoothed_altitudes = []
-    for i in range(len(altitudes)):
-        start = max(0, i - window_size // 2)
-        end = min(len(altitudes), i + window_size // 2 + 1)
-        window = altitudes[start:end]
-        smoothed_altitudes.append(sum(window) / len(window))
-
-    values = []
+    speeds = []
     for i in range(1, len(points)):
-        previous = points[i - 1]
-        current = points[i]
+        spd = calculate_point_speed(points[i - 1], points[i])
+        if spd is not None:
+            speeds.append(spd)
 
-        distance = haversine_distance(previous, current)
-        # Use a minimum distance threshold to avoid extreme slope values from GPS noise
-        if distance > 5.0:
-            previous_alt = smoothed_altitudes[i - 1]
-            current_alt = smoothed_altitudes[i]
-            values.append(((current_alt - previous_alt) / distance) * 100)
+    if not speeds:
+        return None, None
 
-    if not values:
-        # Fallback if all segments are too short
+    return float(min(speeds)), float(max(speeds))
+
+
+def calculate_slope_range(track: Track) -> Tuple[Optional[float], Optional[float]]:
+    """Restituisce la pendenza minima e massima in percentuale."""
+    points = getattr(track, "points", [])
+    if len(points) < 2:
+        return None, None
+
+    altitudes = np.nan_to_num(track.altitudes, nan=0.0)
+
+    # Media mobile su finestra di 11 campioni per smussare il rumore altimetrico del GPS
+    window_size = 11
+    window = np.ones(window_size) / window_size
+    smoothed_altitudes = np.convolve(altitudes, window, mode='same')
+
+    # Distanze dei segmenti
+    distances = haversine_distances_np(track.latitudes, track.longitudes)
+
+    # Maschera per considerare solo segmenti con distanza sufficiente (> 5.0m)
+    valid_mask = distances > 5.0
+    if not np.any(valid_mask):
         return 0.0, 0.0
 
-    return min(values), max(values)
+    delta_alt = smoothed_altitudes[1:] - smoothed_altitudes[:-1]
+    slopes = (delta_alt[valid_mask] / distances[valid_mask]) * 100.0
+
+    if len(slopes) == 0:
+        return 0.0, 0.0
+
+    return float(np.min(slopes)), float(np.max(slopes))
 
 
-def track_distance_profile(track):
-    """Return cumulative distance samples and the total distance.
-
-    Called by:
-        - ``ui.track_panel.TrackPanel.import_file``
-        - ``trim_track_by_distance``
-
-    Args:
-        track: Track to analyze.
-
-    Returns:
-        tuple[list[float], float]: Cumulative distance samples and total meters.
-    """
-    distances = [0.0]
-    total = 0.0
-
-    for i in range(1, len(track.points)):
-        segment = haversine_distance(track.points[i - 1], track.points[i])
-        if segment > 0:
-            total += segment
-        distances.append(total)
-
-    return distances, total
-
-
-def _interpolate_number(start, end, fraction):
+def _interpolate_number(start: Optional[float], end: Optional[float], fraction: float) -> Optional[float]:
     """Interpolate a scalar value between two endpoints.
 
     Called by:

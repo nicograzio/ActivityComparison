@@ -1,76 +1,116 @@
-"""Core track model used throughout the application.
+"""Modello dati fondamentale per le tracce dell'applicazione.
 
-The GUI, loaders and analyzers all operate on this in-memory representation.
-
-Called by:
-    - ``core.gpx_loader.load_gpx``
-    - ``core.fit_loader.load_fit``
-    - ``core.analyzer.trim_track_by_distance``
-
-Consumed by:
-    - ``ui.track_panel.TrackPanel``
-    - ``ui.main_window.MainWindow``
-    - map renderers
-    - graph generation helpers
+Rappresenta in memoria le attività caricate da file FIT o GPX e fornisce
+proprietà vettoriali NumPy con caching lazy per velocizzare i calcoli analitici.
 """
 
 from dataclasses import dataclass
+from typing import List, Optional, Any
+import numpy as np
 
 
-@dataclass
+@dataclass(slots=True)
 class TrackPoint:
-    """Single activity sample.
+    """Singolo campione di un'attività GPS.
 
-    Attributes:
-        latitude: Latitude in decimal degrees.
-        longitude: Longitude in decimal degrees.
-        altitude: Optional altitude in meters.
-        timestamp: Optional timestamp as returned by the loader.
-        speed: Optional speed in meters/second when provided by the source.
-        heart_rate: Optional heart-rate sample in bpm.
+    Attributi:
+        latitude: Latitudine in gradi decimali.
+        longitude: Longitudine in gradi decimali.
+        altitude: Altitudine opzionale in metri.
+        timestamp: Timestamp opzionale della rilevazione.
+        speed: Velocità opzionale in m/s fornita dal dispositivo.
+        heart_rate: Frequenza cardiaca opzionale in bpm.
     """
 
     latitude: float
     longitude: float
-    altitude: float | None = None
-    timestamp: object | None = None
-    speed: float | None = None
-    heart_rate: int | None = None
+    altitude: Optional[float] = None
+    timestamp: Optional[Any] = None
+    speed: Optional[float] = None
+    heart_rate: Optional[int] = None
 
 
 class Track:
-    """Mutable container for the points of one activity.
+    """Contenitore per i punti di un'attività.
 
-    Called by:
-        - loaders when assembling a parsed file
-        - ``core.analyzer.trim_track_by_distance`` when producing a visible subset
-
-    Methods:
-        add_point: append a sample to the track.
+    Offre l'accesso vettorializzato tramite NumPy alle varie metriche per calcoli ad alte prestazioni.
     """
 
-    def __init__(self, name, start_distance_m=0.0):
-        """Create an empty track container.
+    def __init__(self, name: str, start_distance_m: float = 0.0) -> None:
+        """Inizializza un contenitore traccia vuoto.
 
         Args:
-            name: Display name, usually the source file path.
-            start_distance_m: Distance offset in meters from the start of the full track.
+            name: Nome visualizzato (solitamente il percorso del file).
+            start_distance_m: Offset di distanza in metri dall'inizio della traccia completa.
         """
-        self.name = name
-        self.points = []
-        self.start_distance_m = start_distance_m
+        self.name: str = name
+        self.points: List[TrackPoint] = []
+        self.start_distance_m: float = start_distance_m
 
-    def add_point(self, point):
-        """Append a sample to the track.
+        # Cache lazy per le rappresentazioni NumPy
+        self._np_latitudes: Optional[np.ndarray] = None
+        self._np_longitudes: Optional[np.ndarray] = None
+        self._np_altitudes: Optional[np.ndarray] = None
+        self._np_heart_rates: Optional[np.ndarray] = None
+        self._np_speeds: Optional[np.ndarray] = None
 
-        Called by:
-            - GPX/FIT loaders
-            - ``trim_track_by_distance`` when reconstructing the visible range
+    def add_point(self, point: TrackPoint) -> None:
+        """Aggiunge un punto alla traccia e invalida la cache.
 
         Args:
-            point: ``TrackPoint`` to append.
-
-        Returns:
-            None.
+            point: Istanza di ``TrackPoint`` da inserire.
         """
         self.points.append(point)
+        self.invalidate_cache()
+
+    def invalidate_cache(self) -> None:
+        """Invalida la cache degli array vettoriali."""
+        self._np_latitudes = None
+        self._np_longitudes = None
+        self._np_altitudes = None
+        self._np_heart_rates = None
+        self._np_speeds = None
+
+    @property
+    def latitudes(self) -> np.ndarray:
+        """Array NumPy delle latitudini (float64)."""
+        if self._np_latitudes is None:
+            self._np_latitudes = np.array([p.latitude for p in self.points], dtype=np.float64)
+        return self._np_latitudes
+
+    @property
+    def longitudes(self) -> np.ndarray:
+        """Array NumPy delle longitudini (float64)."""
+        if self._np_longitudes is None:
+            self._np_longitudes = np.array([p.longitude for p in self.points], dtype=np.float64)
+        return self._np_longitudes
+
+    @property
+    def altitudes(self) -> np.ndarray:
+        """Array NumPy delle altitudini (float64, np.nan per valori assenti)."""
+        if self._np_altitudes is None:
+            self._np_altitudes = np.array(
+                [p.altitude if p.altitude is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_altitudes
+
+    @property
+    def heart_rates(self) -> np.ndarray:
+        """Array NumPy delle frequenze cardiache (float64, np.nan per valori assenti)."""
+        if self._np_heart_rates is None:
+            self._np_heart_rates = np.array(
+                [p.heart_rate if p.heart_rate is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_heart_rates
+
+    @property
+    def speeds(self) -> np.ndarray:
+        """Array NumPy delle velocità in m/s (float64, np.nan per valori assenti)."""
+        if self._np_speeds is None:
+            self._np_speeds = np.array(
+                [p.speed if p.speed is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_speeds
