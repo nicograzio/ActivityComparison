@@ -35,6 +35,7 @@ class MapWidget(QWidget):
     """Folium-backed track renderer."""
 
     viewChanged = pyqtSignal(dict)
+    mapReady = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,11 +79,12 @@ class MapWidget(QWidget):
         self.viewChanged.emit(state)
 
     def _on_load_finished(self, ok: bool):
-        self._ready = bool(ok)
-        if self._ready and self._pending_draw is not None:
-            track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
-            self._pending_draw = None
-            self.draw_track(track, color_mode, minimum, maximum, fit_bounds)
+        self._ready = True  # Mark as ready anyway to allow app to proceed
+        self.mapReady.emit()
+        if ok and self._pending_draw is not None:
+                track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
+                self._pending_draw = None
+                self.draw_track(track, color_mode, minimum, maximum, fit_bounds)
 
     def _get_html_template(self, m: folium.Map) -> str:
         """Get the HTML content of the folium map with added JS for sync and dynamic drawing."""

@@ -664,10 +664,14 @@ class TrackPanel(QWidget):
  
     def eventFilter(self, obj, event):
         """Show icon tooltips immediately on hover."""
-        if obj in self.icon_labels.values() and event.type() == QEvent.Type.Enter:
-            tooltip_text = obj.toolTip()
-            if tooltip_text:
-                QToolTip.showText(obj.mapToGlobal(obj.rect().bottomLeft()), tooltip_text, obj)
+        if obj in self.icon_labels.values():
+            if event.type() in (QEvent.Type.Enter, QEvent.Type.ToolTip):
+                tooltip_text = obj.toolTip()
+                if tooltip_text:
+                    QToolTip.showText(obj.mapToGlobal(obj.rect().bottomLeft()), tooltip_text, obj)
+                    return True
+            elif event.type() == QEvent.Type.Leave:
+                QToolTip.hideText()
                 return True
         return super().eventFilter(obj, event)
 
@@ -757,7 +761,13 @@ class TrackPanel(QWidget):
             - enables the range slider
             - emits ``activity_loaded`` and ``visible_track_changed``
         """
-        filename, _ = QFileDialog.getOpenFileName(self, "Seleziona attività", "", "Attività GPS (*.fit *.gpx)")
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleziona attività",
+            "",
+            "Attività GPS (*.fit *.gpx)",
+            options=QFileDialog.Option.DontUseNativeDialog,
+        )
         if not filename:
             return
         try:

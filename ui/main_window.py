@@ -12,7 +12,7 @@ Consumes:
     - ``ui.graph_panel.GraphPanel``
 """
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
@@ -33,6 +33,9 @@ class MainWindow(QMainWindow):
     Created by:
         - ``main.py``
     """
+    fullyReady = pyqtSignal()
+
+
 
     def __init__(self):
         """Build the full main window layout and connect signals.
@@ -56,6 +59,7 @@ class MainWindow(QMainWindow):
         self._left_sync_backup = None
         self._right_sync_backup = None
         self._fullscreen_mode = None
+        self._maps_ready_count = 0
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -67,6 +71,9 @@ class MainWindow(QMainWindow):
         self.controls_panel = ComparisonControlsPanel()
         self.left_graph = GraphPanel()
         self.right_graph = GraphPanel()
+
+        self.left_panel.map.mapReady.connect(self._on_map_ready)
+        self.right_panel.map.mapReady.connect(self._on_map_ready)
 
         self.left_panel.visible_track_changed.connect(
             lambda track, graph=self.left_graph: self._update_graph(graph, track)
@@ -637,3 +644,10 @@ class MainWindow(QMainWindow):
         
         # Update the map with the hovered point marker
         source_panel.map.set_hovered_point(point_index)
+
+    def _on_map_ready(self):
+        """Track map readiness and emit fullyReady when both maps are loaded."""
+        self._maps_ready_count += 1
+        if self._maps_ready_count >= 2:
+            self.fullyReady.emit()
+
