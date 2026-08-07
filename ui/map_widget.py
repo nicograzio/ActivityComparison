@@ -17,7 +17,7 @@ import folium
 from PyQt6.QtCore import QUrl, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QVBoxLayout, QWidget, QSizePolicy
 
 from core.analyzer import calculate_point_speed, haversine_distance
 from core.colorizer import value_to_color
@@ -40,6 +40,7 @@ class MapWidget(QWidget):
         super().__init__(parent)
         self._ready = False
         self._pending_draw = None
+        self._fit_next_draw = True
         self._last_view_state: dict[str, Any] = {
             "center": [44.58333, 10.73333],
             "zoom": 14,
@@ -60,6 +61,7 @@ class MapWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.view = QWebEngineView(self)
+        self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.view.page().setWebChannel(self._channel)
         layout.addWidget(self.view)
 
@@ -78,9 +80,9 @@ class MapWidget(QWidget):
     def _on_load_finished(self, ok: bool):
         self._ready = bool(ok)
         if self._ready and self._pending_draw is not None:
-            track, color_mode, minimum, maximum = self._pending_draw
+            track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
             self._pending_draw = None
-            self.draw_track(track, color_mode, minimum, maximum)
+            self.draw_track(track, color_mode, minimum, maximum, fit_bounds)
 
     def _get_html_template(self, m: folium.Map) -> str:
         """Get the HTML content of the folium map with added JS for sync and dynamic drawing."""
@@ -277,14 +279,20 @@ class MapWidget(QWidget):
         # Carica l'HTML sbloccando i permessi internet con l'URL di base fittizio
         self.view.setHtml(content, QUrl("http://localhost/"))
 
-    def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
+    def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None, fit_bounds: bool | None = None):
         """Disegna la traccia sulla mappa Folium/Leaflet.
 
         Ottimizzato per ridurre il carico di calcolo durante la preparazione dei dati JSON.
         """
         if not self._ready:
-            self._pending_draw = (track, color_mode, minimum, maximum)
+            self._pending_draw = (track, color_mode, minimum, maximum, fit_bounds)
             return
+
+        if fit_bounds is None:
+            fit_bounds = self._fit_next_draw
+
+        if fit_bounds:
+            self._fit_next_draw = False
 
         points = getattr(track, "points", None) or []
         if not points:

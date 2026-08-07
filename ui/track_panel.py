@@ -19,7 +19,7 @@ from pathlib import Path
 from enum import Enum
 
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip, QSizePolicy
 from PyQt6.QtGui import QPixmap, QColor
 
 from ui.map_widget import MapWidget
@@ -104,6 +104,7 @@ class TrackPanel(QWidget):
             title: Logical title of the panel.
         """
         super().__init__()
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.track = None
         self.capabilities = None
         self.full_distance_m = 0.0
@@ -208,6 +209,8 @@ class TrackPanel(QWidget):
 
         range_layout = QHBoxLayout()
         self.range_label = QLabel("Nessuna attività caricata")
+        self.range_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.range_label.setMinimumWidth(280)
         range_layout.addWidget(self.range_label)
         range_layout.addStretch()
         
@@ -776,6 +779,7 @@ class TrackPanel(QWidget):
             self.range_slider.setValues(0, slider_max)
             self.visible_start_m = 0
             self.visible_end_m = self.full_distance_m
+            self.map._fit_next_draw = True
             self.update_trim(0, slider_max)
             self._render_visible_track()
             self.activity_loaded.emit(self.track)

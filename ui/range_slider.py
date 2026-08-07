@@ -7,7 +7,7 @@ Emits:
     - ``valuesChanged`` whenever the selected distance interval changes.
 """
 
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QWidget, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
 
@@ -27,6 +27,7 @@ class RangeSlider(QWidget):
             - ``TrackPanel.__init__``
         """
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.minimum = 0
         self.maximum = 1000
         self.lower = 0
