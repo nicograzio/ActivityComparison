@@ -531,6 +531,12 @@ def find_common_segments(track_a: Track, track_b: Track, distance_threshold_m: f
         if sub_pts_b[0].timestamp and sub_pts_b[-1].timestamp:
             time_b_sec = (sub_pts_b[-1].timestamp - sub_pts_b[0].timestamp).total_seconds()
 
+        if avg_speed_a is None and time_a_sec and time_a_sec > 0 and length_a > 0:
+            avg_speed_a = (length_a / time_a_sec) * 3.6
+
+        if avg_speed_b is None and time_b_sec and time_b_sec > 0 and length_b > 0:
+            avg_speed_b = (length_b / time_b_sec) * 3.6
+
         coords_a = [(p.latitude, p.longitude) for p in sub_pts_a]
         coords_b = [(p.latitude, p.longitude) for p in sub_pts_b]
 
@@ -570,8 +576,12 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
     insights = []
     total_length = sum(s["length_m"] for s in segments) / 1000.0
 
-    insights.append(f"<b>Panoramica:</b> Trovati <b>{len(segments)} segmenti comuni</b> per un totale di <b>{total_length:.2f} km</b> di sovrapposizione.")
+    # --- Panoramica generale ---
+    insights.append(
+        f"<b>Panoramica:</b> Trovati <b>{len(segments)} segmenti comuni</b> per un totale di <b>{total_length:.2f} km</b> di sovrapposizione."
+    )
 
+    # --- Confronto velocita ---
     valid_speeds_a = [s["avg_speed_a"] for s in segments if s["avg_speed_a"] is not None]
     valid_speeds_b = [s["avg_speed_b"] for s in segments if s["avg_speed_b"] is not None]
 
@@ -589,6 +599,7 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
         else:
             insights.append("⚖️ <b>Ritmo omogeneo:</b> La velocità media complessiva sui tratti comuni è quasi identica tra le due prestazioni.")
 
+    # --- Analisi FC vs Velocita ---
     valid_hrs_a = [s["avg_hr_a"] for s in segments if s["avg_hr_a"] is not None]
     valid_hrs_b = [s["avg_hr_b"] for s in segments if s["avg_hr_b"] is not None]
 
@@ -605,6 +616,7 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
         elif diff_spd < 0 and diff_hr > 0:
             insights.append(f"⚠️ <b>Segnale di Affaticamento:</b> In {name_b} la velocità è stata inferiore nonostante una frequenza cardiaca più alta (+{diff_hr:.0f} bpm). Potrebbe indicare stanchezza accumulata o condizioni meteo avverse.")
 
+    # --- Confronto salite ---
     climb_segments = [s for s in segments if (s["slope_a"] and s["slope_a"] > 2.0) or (s["slope_b"] and s["slope_b"] > 2.0)]
 
     if climb_segments:
@@ -617,11 +629,76 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
             elif diff_climb < -0.5:
                 insights.append(f"⛰️ <b>Consiglio Salita:</b> Nei tratti pendenti {name_a} è risultata più efficace (+{abs(diff_climb):.1f} km/h). Lavora sulla cadenza e sulla gestione del passo in salita.")
 
+    # --- Segmento con maggiore guadagno ---
     if len(segments) > 1 and valid_speeds_a and valid_speeds_b:
         best_seg_b = max(segments, key=lambda s: (s["avg_speed_b"] or 0) - (s["avg_speed_a"] or 0))
         insights.append(
             f"🎯 <b>Miglior Segmento:</b> Nel <b>Segmento {best_seg_b['id']}</b> (km {best_seg_b['a_start_dist_m']/1000:.2f}) hai registrato il massimo guadagno prestazionale!"
         )
+
+    # --- Analisi per segmento ---
+    insights.append("<hr>")
+    insights.append(f"<b>Analisi dettagliata per segmento</b>")
+    for seg in segments:
+        seg_id = seg.get("id", "?")
+        length_km = seg.get("length_m", 0) / 1000.0
+        time_a = seg.get("time_a_sec")
+        time_b = seg.get("time_b_sec")
+        spd_a = seg.get("avg_speed_a")
+        spd_b = seg.get("avg_speed_b")
+        hr_a = seg.get("avg_hr_a")
+        hr_b = seg.get("avg_hr_b")
+        slope_a = seg.get("slope_a")
+        slope_b = seg.get("slope_b")
+
+        lines = [f"• <b>Segmento {seg_id}</b> ({length_km:.2f} km)"]
+
+        if time_a is not None and time_b is not None:
+            diff = time_b - time_a
+            if diff < 0:
+                lines.append(f"  - Tempo: hai guadagnato <b>{abs(diff):.0f}s</b> su {name_a}")
+            elif diff > 0:
+                lines.append(f"  - Tempo: hai perso <b>{diff:.0f}s</b> rispetto a {name_a}")
+            else:
+                lines.append("  - Tempo: uguale")
+
+        if spd_a is not None and spd_b is not None:
+            diff = spd_b - spd_a
+            if abs(diff) >= 0.5:
+                who = name_b if diff > 0 else name_a
+                lines.append(f"  - Velocità: <b>{who}</b> più veloce di {abs(diff):.1f} km/h")
+            else:
+                lines.append("  - Velocità: sostanzialmente uguale")
+
+        if hr_a is not None and hr_b is not None:
+            diff = hr_b - hr_a
+            if abs(diff) >= 3:
+                who_high = name_b if diff > 0 else name_a
+                lines.append(f"  - FC media: <b>{who_high}</b> con battiti più alti di {abs(diff):.0f} bpm")
+            else:
+                lines.append("  - FC media: simile")
+
+        if slope_a is not None and slope_b is not None:
+            diff = slope_b - slope_a
+            if abs(diff) >= 0.5:
+                who = name_b if diff > 0 else name_a
+                lines.append(f"  - Pendenza: in <b>{who}</b> hai affrontato salite più ripide (+{abs(diff):.1f}%)")
+            else:
+                lines.append("  - Pendenza: analoga")
+
+        insights.append("<br>".join(lines))
+
+    # --- Raccomandazioni finali ---
+    insights.append("<hr>")
+    if not valid_speeds_a or not valid_speeds_b:
+        insights.append("💬 <b>Nota:</b> Dati di velocità incompleti, impossibile generare raccomandazioni avanzate.")
+    else:
+        if abs(diff_spd) < 0.5:
+            insights.append("💬 <b>Raccomandazione:</b> Le due prestazioni sono molto simili. Prova a variare strategia di gara o alimentazione per cercare margini.")
+        elif diff_spd > 0:
+            insights.append(f"💬 <b>Raccomandazione:</b> {name_b} mostra un passo più aggressivo. Valuta se mantenere questo ritmo per gare più lunghe o se serve più recupero tra tratti veloci.")
+        else:
+            insights.append(f"💬 <b>Raccomandazione:</b> {name_a} è risultata più veloce. Analizza la distribuzione dello sforzo in {name_b}: forse hai iniziato troppo forte o gestito male i tratti tecnici.")
 
     return insights
 

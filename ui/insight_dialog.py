@@ -21,7 +21,34 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QTextEdit,
     QSplitter,
+    QWidget,
 )
+
+
+def _format_duration(seconds):
+    """Format a duration in seconds to MM:SS or HH:MM:SS."""
+    if seconds is None:
+        return "N/A"
+    seconds = int(round(seconds))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _format_pace(avg_speed_kmh):
+    """Format average speed in km/h to min/km pace string."""
+    if avg_speed_kmh is None or avg_speed_kmh <= 0:
+        return "N/A"
+    pace_min_per_km = 60.0 / avg_speed_kmh
+    minutes = int(pace_min_per_km)
+    seconds = int(round((pace_min_per_km - minutes) * 60))
+    if seconds >= 60:
+        minutes += 1
+        seconds -= 60
+    return f"{minutes}'{seconds:02d}\""
 
 
 class InsightDialog(QDialog):
@@ -39,7 +66,7 @@ class InsightDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Analisi Segmenti Comuni")
         self.setModal(True)
-        self.resize(900, 600)
+        self.resize(1100, 600)
 
         self.segments = segments
         self.name_a = name_a
@@ -62,13 +89,18 @@ class InsightDialog(QDialog):
         layout.addWidget(splitter, 1)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(13)
         self.table.setHorizontalHeaderLabels([
             "N.",
-            f"Traccia A (m)",
-            f"Traccia B (m)",
+            "Traccia A (m)",
+            "Traccia B (m)",
             "Distanza (m)",
-            f"Δ Velocità (km/h)",
+            "Tempo A",
+            "Tempo B",
+            "Δ Tempo",
+            "Ritmo A",
+            "Ritmo B",
+            "Δ Vel (km/h)",
             "Δ Pendenza (%)",
             "Δ Altitudine (m)",
             "Δ FC (bpm)",
@@ -79,6 +111,36 @@ class InsightDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        splitter.addWidget(self.table)
+
+        coach_widget = QWidget()
+        coach_layout = QVBoxLayout(coach_widget)
+        coach_layout.setContentsMargins(0, 0, 0, 0)
+
+        coach_title = QLabel("<b>Coach Insights</b>")
+        coach_layout.addWidget(coach_title)
+
+        self.coach_text = QTextEdit()
+        self.coach_text.setReadOnly(True)
+        coach_layout.addWidget(self.coach_text)
+
+        splitter.addWidget(coach_widget)
+        splitter.setSizes([400, 220])
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        close_button = QPushButton("Chiudi")
+        close_button.clicked.connect(self.accept)
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)
+
+        self._populate_table()
+        self._populate_coach_insights()
+
+    def _populate_table(self):
+        """Fill the table with segment comparison data."""
+        self.table.setRowCount(len(self.segments))
+
         for row, seg in enumerate(self.segments):
             item_id = QTableWidgetItem(str(seg.get("id", row + 1)))
             item_id.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -101,6 +163,35 @@ class InsightDialog(QDialog):
             item_len.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 3, item_len)
 
+            time_a = seg.get("time_a_sec")
+            item_time_a = QTableWidgetItem(_format_duration(time_a))
+            item_time_a.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 4, item_time_a)
+
+            time_b = seg.get("time_b_sec")
+            item_time_b = QTableWidgetItem(_format_duration(time_b))
+            item_time_b.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 5, item_time_b)
+
+            if time_a is not None and time_b is not None:
+                diff_time = time_b - time_a
+                item_diff_time = QTableWidgetItem(f"{diff_time:+.0f}s")
+                item_diff_time.setForeground(QBrush(QColor("#2ecc71" if diff_time < 0 else "#e74c3c")))
+            else:
+                item_diff_time = QTableWidgetItem("N/A")
+            item_diff_time.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 6, item_diff_time)
+
+            pace_a = _format_pace(seg.get("avg_speed_a"))
+            item_pace_a = QTableWidgetItem(pace_a)
+            item_pace_a.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 7, item_pace_a)
+
+            pace_b = _format_pace(seg.get("avg_speed_b"))
+            item_pace_b = QTableWidgetItem(pace_b)
+            item_pace_b.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 8, item_pace_b)
+
             spd_a = seg.get("avg_speed_a")
             spd_b = seg.get("avg_speed_b")
             if spd_a is not None and spd_b is not None:
@@ -110,7 +201,7 @@ class InsightDialog(QDialog):
             else:
                 item_spd = QTableWidgetItem("N/A")
             item_spd.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 4, item_spd)
+            self.table.setItem(row, 9, item_spd)
 
             slope_a = seg.get("slope_a")
             slope_b = seg.get("slope_b")
@@ -121,7 +212,7 @@ class InsightDialog(QDialog):
             else:
                 item_slope = QTableWidgetItem("N/A")
             item_slope.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 5, item_slope)
+            self.table.setItem(row, 10, item_slope)
 
             alt_a = seg.get("avg_alt_a")
             alt_b = seg.get("avg_alt_b")
@@ -131,7 +222,7 @@ class InsightDialog(QDialog):
             else:
                 item_alt = QTableWidgetItem("N/A")
             item_alt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 6, item_alt)
+            self.table.setItem(row, 11, item_alt)
 
             hr_a = seg.get("avg_hr_a")
             hr_b = seg.get("avg_hr_b")
@@ -142,7 +233,7 @@ class InsightDialog(QDialog):
             else:
                 item_hr = QTableWidgetItem("N/A")
             item_hr.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 7, item_hr)
+            self.table.setItem(row, 12, item_hr)
 
     def _populate_coach_insights(self):
         """Import the coach insights generator from core.analyzer."""
@@ -150,32 +241,3 @@ class InsightDialog(QDialog):
 
         insights = generate_segment_coach_insights(self.segments, self.name_a, self.name_b)
         self.coach_text.setHtml("<br>".join(insights))
-        splitter.addWidget(self.table)
-
-        coach_widget = QWidget()
-        coach_layout = QVBoxLayout(coach_widget)
-        coach_layout.setContentsMargins(0, 0, 0, 0)
-
-        coach_title = QLabel("<b>Coach Insights</b>")
-        coach_layout.addWidget(coach_title)
-
-        self.coach_text = QTextEdit()
-        self.coach_text.setReadOnly(True)
-        coach_layout.addWidget(self.coach_text)
-
-        splitter.addWidget(coach_widget)
-        splitter.setSizes([350, 200])
-
-        button_layout = QHBoxLayout()
-        button_layout.addStretch(1)
-        close_button = QPushButton("Chiudi")
-        close_button.clicked.connect(self.accept)
-        button_layout.addWidget(close_button)
-        layout.addLayout(button_layout)
-
-        self._populate_table()
-        self._populate_coach_insights()
-
-    def _populate_table(self):
-        """Fill the table with segment comparison data."""
-        self.table.setRowCount(len(self.segments))
