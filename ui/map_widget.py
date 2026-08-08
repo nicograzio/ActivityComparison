@@ -57,6 +57,7 @@ class MapWidget(QWidget):
         # Current hovered point for map synchronization
         self._current_hovered_point = None
         self._points_list = []  # Store points for index lookup
+        self._highlighted_segments = []  # Store highlighted segments for cleanup
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -256,6 +257,54 @@ class MapWidget(QWidget):
                         }
                     };
 
+                    // Function to draw highlighted common segments
+                    window.drawHighlightedSegments = function(segments) {
+                        // Clear existing highlighted segments
+                        if (window.highlightedSegmentLayers) {
+                            window.highlightedSegmentLayers.forEach(function(layer) {
+                                map.removeLayer(layer);
+                            });
+                        }
+                        window.highlightedSegmentLayers = [];
+
+                        if (!segments || segments.length === 0) return;
+
+                        segments.forEach(function(segment) {
+                            if (segment.coords && segment.coords.length >= 2) {
+                                var polyline = L.polyline(segment.coords, {
+                                    color: '#FFD700',
+                                    weight: 8,
+                                    opacity: 0.9,
+                                    dashArray: '10, 10',
+                                    lineCap: 'round',
+                                    renderer: L.canvas()
+                                }).addTo(map);
+                                window.highlightedSegmentLayers.push(polyline);
+
+                                // Add start marker for the segment
+                                var startMarker = L.circleMarker(segment.coords[0], {
+                                    radius: 10,
+                                    fillColor: '#FFD700',
+                                    color: '#FF6B00',
+                                    weight: 3,
+                                    opacity: 1,
+                                    fillOpacity: 0.9
+                                }).addTo(map);
+                                window.highlightedSegmentLayers.push(startMarker);
+                            }
+                        });
+                    };
+
+                    // Function to clear highlighted segments
+                    window.clearHighlightedSegments = function() {
+                        if (window.highlightedSegmentLayers) {
+                            window.highlightedSegmentLayers.forEach(function(layer) {
+                                map.removeLayer(layer);
+                            });
+                            window.highlightedSegmentLayers = [];
+                        }
+                    };
+
                     break;
                 }
             }
@@ -406,3 +455,36 @@ class MapWidget(QWidget):
             }
         )
         self.view.page().runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")
+
+    def draw_highlighted_segments(self, segments: list[dict]):
+        """Draw highlighted segments on the map.
+
+        Called by:
+            - ``MainWindow`` when common segments are identified
+
+        Args:
+            segments: List of segment dictionaries with ``coords_a`` and ``coords_b``
+        """
+        self._highlighted_segments = segments
+        if not self._ready:
+            return
+
+        # Prepare segments data for JavaScript
+        js_segments = []
+        for seg in segments:
+            js_segments.append({"coords": seg.get("coords_a", [])})
+            js_segments.append({"coords": seg.get("coords_b", [])})
+
+        js_data = json.dumps(js_segments)
+        self.view.page().runJavaScript(f"if (window.drawHighlightedSegments) window.drawHighlightedSegments({js_data});")
+
+    def clear_highlighted_segments(self):
+        """Remove highlighted segments from the map.
+
+        Called by:
+            - ``MainWindow`` when clearing highlights or loading new tracks
+        """
+        self._highlighted_segments = []
+        if not self._ready:
+            return
+        self.view.page().runJavaScript("if (window.clearHighlightedSegments) window.clearHighlightedSegments();")

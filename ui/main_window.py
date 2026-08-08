@@ -13,12 +13,13 @@ Consumes:
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter, QMessageBox
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel, ScaleMode
 from ui.graph_panel import GraphPanel
-from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series
+from ui.insight_dialog import InsightDialog
+from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series, find_common_segments
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +60,8 @@ class MainWindow(QMainWindow):
         self._right_sync_backup = None
         self._fullscreen_mode = None
         self._maps_ready_count = 0
+        self._common_segments = []
+        self._highlight_enabled = False
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -130,6 +133,8 @@ class MainWindow(QMainWindow):
 
         self.controls_panel.sync_maps_toggled.connect(self._on_sync_maps_toggled)
         self.controls_panel.sync_scales_toggled.connect(self._on_sync_scales_toggled)
+        self.controls_panel.highlight_common_segments_toggled.connect(self._on_highlight_common_segments_toggled)
+        self.controls_panel.show_segments_insight_requested.connect(self._on_show_segments_insight)
         self.controls_panel.invert_activities_requested.connect(self._invert_activities)
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
@@ -369,6 +374,10 @@ class MainWindow(QMainWindow):
             finally:
                 self._syncing_scales = False
 
+        # Clear common segment highlights when the visible track changes
+        if self._highlight_enabled:
+            self._clear_common_segment_highlights()
+
     def _on_manual_limits_changed(self, source_panel, minimum, maximum):
         """Sync manual edits if scale synchronization is active."""
         if not self._sync_scales_enabled or self._syncing_scales:
@@ -457,6 +466,9 @@ class MainWindow(QMainWindow):
         """Handle color mode (metric) changes."""
         if not self._sync_scales_enabled or self._syncing_scales:
             return
+
+        if self._highlight_enabled:
+            self._clear_common_segment_highlights()
 
         if panel is self.left_panel:
             # Master A: force right panel to follow
@@ -561,6 +573,80 @@ class MainWindow(QMainWindow):
         self.left_panel.refresh_visible_track()
         self.right_panel.refresh_visible_track()
  
+    def _compute_common_segments(self):
+        """Compute common segments between the two loaded tracks.
+
+        Returns:
+            list[dict]: Common segments or empty list if tracks are missing.
+        """
+        if self.left_panel.track is None or self.right_panel.track is None:
+            return []
+        left_visible = self.left_panel._visible_track()
+        right_visible = self.right_panel._visible_track()
+        if left_visible is None or right_visible is None:
+            return []
+        return find_common_segments(left_visible, right_visible)
+
+    def _clear_common_segment_highlights(self):
+        """Clear highlighted segments from both maps."""
+        self._common_segments = []
+        self._highlight_enabled = False
+        self.left_panel.map.clear_highlighted_segments()
+        self.right_panel.map.clear_highlighted_segments()
+        self.controls_panel.set_highlight_common_segments_checked(False)
+        self.controls_panel.set_segments_insight_enabled(False)
+
+    def _on_highlight_common_segments_toggled(self, enabled: bool):
+        """Handle highlight common segments toggle.
+
+        Called by:
+            - ``ComparisonControlsPanel.highlight_common_segments_toggled``
+        """
+        self._highlight_enabled = bool(enabled)
+        if not self._highlight_enabled:
+            self._clear_common_segment_highlights()
+            return
+
+        segments = self._compute_common_segments()
+        self._common_segments = segments
+        if not segments:
+            QMessageBox.information(
+                self,
+                "Segmenti comuni",
+                "Nessun segmento comune trovato con la soglia attuale (15 m).",
+            )
+            self._clear_common_segment_highlights()
+            return
+
+        self.left_panel.map.draw_highlighted_segments(segments)
+        self.right_panel.map.draw_highlighted_segments(segments)
+        self.controls_panel.set_segments_insight_enabled(True)
+
+    def _on_show_segments_insight(self):
+        """Open the insight dialog for the current common segments.
+
+        Called by:
+            - ``ComparisonControlsPanel.show_segments_insight_requested``
+        """
+        if not self._common_segments:
+            segments = self._compute_common_segments()
+            self._common_segments = segments
+            if not segments:
+                QMessageBox.information(
+                    self,
+                    "Segmenti comuni",
+                    "Nessun segmento comune disponibile per l'analisi.",
+                )
+                return
+
+        dialog = InsightDialog(
+            self._common_segments,
+            name_a=self.left_panel.title,
+            name_b=self.right_panel.title,
+            parent=self,
+        )
+        dialog.exec()
+ 
     def _apply_fullscreen_mode(self, mode):
         """Show one side in fullscreen and hide the other."""
         self._fullscreen_mode = mode
@@ -601,6 +687,7 @@ class MainWindow(QMainWindow):
             self._apply_fullscreen_mode(None)
         if self._fullscreen_mode == "right" and not right_loaded:
             self._apply_fullscreen_mode(None)
+        self._clear_common_segment_highlights()
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.

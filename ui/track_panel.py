@@ -110,6 +110,7 @@ class TrackPanel(QWidget):
             title: Logical title of the panel.
         """
         super().__init__()
+        self.title = title
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.track = None
         self.capabilities = None

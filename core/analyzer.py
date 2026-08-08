@@ -417,3 +417,211 @@ def trim_track_by_distance(track, start_distance_m, end_distance_m):
         append_point(points[0])
 
     return trimmed
+def find_common_segments(track_a: Track, track_b: Track, distance_threshold_m: float = 15.0, min_segment_length_m: float = 20.0) -> List[dict]:
+    """Individua i segmenti geograficamente comuni tra due tracce.
+
+    Sfrutta un campionamento spaziale e raggruppa i tratti consecutivi che corrono
+    a una distanza inferiore a ``distance_threshold_m``.
+    """
+    if not track_a or not track_b or len(track_a.points) < 2 or len(track_b.points) < 2:
+        return []
+
+    lats_a, lons_a = track_a.latitudes, track_a.longitudes
+    lats_b, lons_b = track_b.latitudes, track_b.longitudes
+
+    profile_a, total_dist_a = track_distance_profile(track_a)
+    profile_b, total_dist_b = track_distance_profile(track_b)
+
+    grid_size_deg = (distance_threshold_m * 2) / 111000.0
+    grid_b = {}
+    for idx_b, (lat_b, lon_b) in enumerate(zip(lats_b, lons_b)):
+        cell = (int(lat_b / grid_size_deg), int(lon_b / grid_size_deg))
+        if cell not in grid_b:
+            grid_b[cell] = []
+        grid_b[cell].append(idx_b)
+
+    is_a_common = np.zeros(len(track_a.points), dtype=bool)
+    matched_b_indices = [-1] * len(track_a.points)
+
+    for idx_a, (lat_a, lon_a) in enumerate(zip(lats_a, lons_a)):
+        cell_a = (int(lat_a / grid_size_deg), int(lon_a / grid_size_deg))
+        min_dist = float("inf")
+        best_b_idx = -1
+
+        for d_lat in (-1, 0, 1):
+            for d_lon in (-1, 0, 1):
+                cell = (cell_a[0] + d_lat, cell_a[1] + d_lon)
+                if cell in grid_b:
+                    for idx_b in grid_b[cell]:
+                        dist = haversine_distance(track_a.points[idx_a], track_b.points[idx_b])
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_b_idx = idx_b
+
+        if min_dist <= distance_threshold_m:
+            is_a_common[idx_a] = True
+            matched_b_indices[idx_a] = best_b_idx
+
+    segments = []
+    in_segment = False
+    seg_start_a = 0
+
+    for i in range(len(is_a_common)):
+        if is_a_common[i] and not in_segment:
+            in_segment = True
+            seg_start_a = i
+        elif not is_a_common[i] and in_segment:
+            in_segment = False
+            seg_end_a = i - 1
+            length_a = profile_a[seg_end_a] - profile_a[seg_start_a]
+            if length_a >= min_segment_length_m:
+                segments.append((seg_start_a, seg_end_a))
+
+    if in_segment:
+        seg_end_a = len(is_a_common) - 1
+        length_a = profile_a[seg_end_a] - profile_a[seg_start_a]
+        if length_a >= min_segment_length_m:
+            segments.append((seg_start_a, seg_end_a))
+
+    result = []
+    for seg_idx, (a_start, a_end) in enumerate(segments, 1):
+        b_indices = [matched_b_indices[k] for k in range(a_start, a_end + 1) if matched_b_indices[k] != -1]
+        if not b_indices:
+            continue
+        b_start = min(b_indices)
+        b_end = max(b_indices)
+
+        sub_pts_a = track_a.points[a_start:a_end + 1]
+        sub_pts_b = track_b.points[b_start:b_end + 1]
+
+        length_a = profile_a[a_end] - profile_a[a_start]
+        length_b = profile_b[b_end] - profile_b[b_start]
+
+        speeds_a = [p.speed * 3.6 for p in sub_pts_a if p.speed is not None]
+        avg_speed_a = float(np.mean(speeds_a)) if speeds_a else None
+
+        alts_a = [p.altitude for p in sub_pts_a if p.altitude is not None]
+        avg_alt_a = float(np.mean(alts_a)) if alts_a else None
+
+        hrs_a = [p.heart_rate for p in sub_pts_a if p.heart_rate is not None]
+        avg_hr_a = float(np.mean(hrs_a)) if hrs_a else None
+
+        speeds_b = [p.speed * 3.6 for p in sub_pts_b if p.speed is not None]
+        avg_speed_b = float(np.mean(speeds_b)) if speeds_b else None
+
+        alts_b = [p.altitude for p in sub_pts_b if p.altitude is not None]
+        avg_alt_b = float(np.mean(alts_b)) if alts_b else None
+
+        hrs_b = [p.heart_rate for p in sub_pts_b if p.heart_rate is not None]
+        avg_hr_b = float(np.mean(hrs_b)) if hrs_b else None
+
+        slope_a = None
+        if len(alts_a) >= 2 and length_a > 0:
+            slope_a = ((alts_a[-1] - alts_a[0]) / length_a) * 100.0
+
+        slope_b = None
+        if len(alts_b) >= 2 and length_b > 0:
+            slope_b = ((alts_b[-1] - alts_b[0]) / length_b) * 100.0
+
+        time_a_sec = None
+        if sub_pts_a[0].timestamp and sub_pts_a[-1].timestamp:
+            time_a_sec = (sub_pts_a[-1].timestamp - sub_pts_a[0].timestamp).total_seconds()
+
+        time_b_sec = None
+        if sub_pts_b[0].timestamp and sub_pts_b[-1].timestamp:
+            time_b_sec = (sub_pts_b[-1].timestamp - sub_pts_b[0].timestamp).total_seconds()
+
+        coords_a = [(p.latitude, p.longitude) for p in sub_pts_a]
+        coords_b = [(p.latitude, p.longitude) for p in sub_pts_b]
+
+        result.append({
+            "id": seg_idx,
+            "a_start_idx": a_start,
+            "a_end_idx": a_end,
+            "b_start_idx": b_start,
+            "b_end_idx": b_end,
+            "a_start_dist_m": profile_a[a_start],
+            "a_end_dist_m": profile_a[a_end],
+            "b_start_dist_m": profile_b[b_start],
+            "b_end_dist_m": profile_b[b_end],
+            "length_m": max(length_a, length_b),
+            "coords_a": coords_a,
+            "coords_b": coords_b,
+            "time_a_sec": time_a_sec,
+            "time_b_sec": time_b_sec,
+            "avg_speed_a": avg_speed_a,
+            "avg_speed_b": avg_speed_b,
+            "slope_a": slope_a,
+            "slope_b": slope_b,
+            "avg_alt_a": avg_alt_a,
+            "avg_alt_b": avg_alt_b,
+            "avg_hr_a": avg_hr_a,
+            "avg_hr_b": avg_hr_b,
+        })
+
+    return result
+
+
+def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attività A", name_b: str = "Attività B") -> List[str]:
+    """Genera consigli intelligenti del Coach basandosi sulle differenze nei segmenti comuni."""
+    if not segments:
+        return ["Nessun segmento comune rilevato per elaborare suggerimenti del Coach."]
+
+    insights = []
+    total_length = sum(s["length_m"] for s in segments) / 1000.0
+
+    insights.append(f"<b>Panoramica:</b> Trovati <b>{len(segments)} segmenti comuni</b> per un totale di <b>{total_length:.2f} km</b> di sovrapposizione.")
+
+    valid_speeds_a = [s["avg_speed_a"] for s in segments if s["avg_speed_a"] is not None]
+    valid_speeds_b = [s["avg_speed_b"] for s in segments if s["avg_speed_b"] is not None]
+
+    if valid_speeds_a and valid_speeds_b:
+        mean_spd_a = float(np.mean(valid_speeds_a))
+        mean_spd_b = float(np.mean(valid_speeds_b))
+        diff_spd = mean_spd_b - mean_spd_a
+        if abs(diff_spd) >= 0.5:
+            faster = name_b if diff_spd > 0 else name_a
+            slower = name_a if diff_spd > 0 else name_b
+            pct = (abs(diff_spd) / min(mean_spd_a, mean_spd_b)) * 100.0
+            insights.append(
+                f"🚀 <b>Velocità:</b> In <b>{faster}</b> sei stato più veloce in media del <b>{pct:.1f}%</b> ({abs(diff_spd):.1f} km/h in più) nei tratti comuni rispetto a {slower}."
+            )
+        else:
+            insights.append("⚖️ <b>Ritmo omogeneo:</b> La velocità media complessiva sui tratti comuni è quasi identica tra le due prestazioni.")
+
+    valid_hrs_a = [s["avg_hr_a"] for s in segments if s["avg_hr_a"] is not None]
+    valid_hrs_b = [s["avg_hr_b"] for s in segments if s["avg_hr_b"] is not None]
+
+    if valid_hrs_a and valid_hrs_b and valid_speeds_a and valid_speeds_b:
+        mean_hr_a = float(np.mean(valid_hrs_a))
+        mean_hr_b = float(np.mean(valid_hrs_b))
+        diff_hr = mean_hr_b - mean_hr_a
+        diff_spd = mean_spd_b - mean_spd_a
+
+        if diff_spd > 0 and diff_hr <= 0:
+            insights.append(f"💡 <b>Efficienza Esemplare:</b> In {name_b} hai viaggiato più veloce con una frequenza cardiaca media uguale o inferiore! Segno di un ottimo stato di forma o gestione energetica.")
+        elif diff_spd > 0 and diff_hr > 5:
+            insights.append(f"❤️ <b>Sforzo Cardiovascolare:</b> L'aumento di velocità in {name_b} ha richiesto un costo cardiaco medio di +{diff_hr:.0f} bpm. Assicurati di dosare i fuori soglia nei tratti più lunghi.")
+        elif diff_spd < 0 and diff_hr > 0:
+            insights.append(f"⚠️ <b>Segnale di Affaticamento:</b> In {name_b} la velocità è stata inferiore nonostante una frequenza cardiaca più alta (+{diff_hr:.0f} bpm). Potrebbe indicare stanchezza accumulata o condizioni meteo avverse.")
+
+    climb_segments = [s for s in segments if (s["slope_a"] and s["slope_a"] > 2.0) or (s["slope_b"] and s["slope_b"] > 2.0)]
+
+    if climb_segments:
+        spd_climb_a = [s["avg_speed_a"] for s in climb_segments if s["avg_speed_a"]]
+        spd_climb_b = [s["avg_speed_b"] for s in climb_segments if s["avg_speed_b"]]
+        if spd_climb_a and spd_climb_b:
+            diff_climb = np.mean(spd_climb_b) - np.mean(spd_climb_a)
+            if diff_climb > 0.5:
+                insights.append(f"⛰️ <b>Prestazione in Salita:</b> Ottimo miglioramento nei tratti in salita in {name_b} (+{diff_climb:.1f} km/h).")
+            elif diff_climb < -0.5:
+                insights.append(f"⛰️ <b>Consiglio Salita:</b> Nei tratti pendenti {name_a} è risultata più efficace (+{abs(diff_climb):.1f} km/h). Lavora sulla cadenza e sulla gestione del passo in salita.")
+
+    if len(segments) > 1 and valid_speeds_a and valid_speeds_b:
+        best_seg_b = max(segments, key=lambda s: (s["avg_speed_b"] or 0) - (s["avg_speed_a"] or 0))
+        insights.append(
+            f"🎯 <b>Miglior Segmento:</b> Nel <b>Segmento {best_seg_b['id']}</b> (km {best_seg_b['a_start_dist_m']/1000:.2f}) hai registrato il massimo guadagno prestazionale!"
+        )
+
+    return insights
+

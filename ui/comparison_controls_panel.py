@@ -14,6 +14,8 @@ Signals emitted:
     - toggle_graphs_requested
     - left_fullscreen_toggled
     - right_fullscreen_toggled
+    - highlight_common_segments_toggled
+    - show_segments_insight_requested
 """
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -30,6 +32,8 @@ class ComparisonControlsPanel(QWidget):
     toggle_graphs_requested = pyqtSignal(bool)
     left_fullscreen_toggled = pyqtSignal(bool)
     right_fullscreen_toggled = pyqtSignal(bool)
+    highlight_common_segments_toggled = pyqtSignal(bool)
+    show_segments_insight_requested = pyqtSignal()
 
     def __init__(self):
         """Create the control column and wire button signals.
@@ -66,6 +70,24 @@ class ComparisonControlsPanel(QWidget):
         )
         self.sync_scales_button.toggled.connect(self.sync_scales_toggled.emit)
         layout.addWidget(self.sync_scales_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.highlight_common_segments_button = self._build_button(
+            "🎯",
+            "Evidenzia segmenti comuni",
+            "Evidenzia sulla mappa i segmenti comuni tra le due tracce",
+            checkable=True,
+        )
+        self.highlight_common_segments_button.toggled.connect(self.highlight_common_segments_toggled.emit)
+        layout.addWidget(self.highlight_common_segments_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        self.show_segments_insight_button = self._build_button(
+            "🤖",
+            "Mostra analisi segmenti",
+            "Apri la finestra con il confronto dettagliato dei segmenti comuni",
+            checkable=False,
+        )
+        self.show_segments_insight_button.clicked.connect(self.show_segments_insight_requested.emit)
+        layout.addWidget(self.show_segments_insight_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.left_fullscreen_button = self._build_button(
             "➡️",
@@ -155,8 +177,32 @@ class ComparisonControlsPanel(QWidget):
         self._sync_controls_enabled = enabled
         self.sync_maps_button.setEnabled(enabled and self._fullscreen_mode is None)
         self.sync_scales_button.setEnabled(enabled and self._fullscreen_mode is None)
+        self.highlight_common_segments_button.setEnabled(enabled and self._fullscreen_mode is None)
         self.invert_button.setEnabled(enabled and self._fullscreen_mode is None)
         self.center_button.setEnabled(enabled and self._fullscreen_mode is None)
+
+    def set_segments_insight_enabled(self, enabled: bool):
+        """Enable or disable the segments insight button.
+
+        Called by:
+            - ``MainWindow`` when common segments are available or cleared.
+        """
+        self.show_segments_insight_button.setEnabled(
+            enabled and self._sync_controls_enabled and self._fullscreen_mode is None
+        )
+
+    def set_highlight_common_segments_checked(self, checked: bool):
+        """Programmatically check or uncheck the highlight toggle.
+
+        Called by:
+            - ``MainWindow`` to reflect the current highlight state without
+              emitting the toggled signal again.
+        """
+        self.highlight_common_segments_button.blockSignals(True)
+        try:
+            self.highlight_common_segments_button.setChecked(checked)
+        finally:
+            self.highlight_common_segments_button.blockSignals(False)
 
     def set_fullscreen_buttons_enabled(self, left_enabled: bool, right_enabled: bool):
         """Enable or disable the fullscreen controls for each side."""
@@ -170,6 +216,8 @@ class ComparisonControlsPanel(QWidget):
 
         self.sync_maps_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.sync_scales_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.highlight_common_segments_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.show_segments_insight_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.invert_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.center_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
 
