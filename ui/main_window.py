@@ -639,12 +639,17 @@ class MainWindow(QMainWindow):
                 )
                 return
 
+        left_visible = self.left_panel._visible_track()
+        right_visible = self.right_panel._visible_track()
         dialog = InsightDialog(
             self._common_segments,
             name_a=self.left_panel.title,
             name_b=self.right_panel.title,
+            track_a=left_visible,
+            track_b=right_visible,
             parent=self,
         )
+        dialog.segment_point_selected.connect(self._on_segment_point_selected)
         dialog.exec()
  
     def _apply_fullscreen_mode(self, mode):
@@ -719,6 +724,28 @@ class MainWindow(QMainWindow):
         
         # Update the map with the hovered point marker
         source_panel.map.set_hovered_point(point_index)
+    def _on_segment_point_selected(self, track, point_index):
+        """Handle point selection from the segment detail dialog.
+
+        Called by:
+            - ``InsightDialog.segment_point_selected`` signal
+
+        Args:
+            track: "A" or "B"
+            point_index: Index of the selected point in the original track
+        """
+        if track == "A":
+            panel = self.left_panel
+            graph = self.left_graph
+        else:
+            panel = self.right_panel
+            graph = self.right_graph
+
+        if panel and panel.map and panel.track:
+            if 0 <= point_index < len(panel.track.points):
+                panel.map.set_hovered_point(point_index)
+                if graph:
+                    graph.set_hovered_point_by_index(point_index)
 
     def _on_map_ready(self):
         """Track map readiness and emit fullyReady when both maps are loaded."""

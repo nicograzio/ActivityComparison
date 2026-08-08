@@ -504,6 +504,66 @@ class GraphPanel(QWidget):
         self._hide_interactive_elements()
         super().leaveEvent(event)
 
+    def set_hovered_point_by_index(self, point_index: int):
+        """Show the hovered point marker by data index.
+
+        Called by:
+            - ``MainWindow`` when selecting a point from the segment detail dialog
+
+        Args:
+            point_index: Index of the point in the track data arrays.
+        """
+        if point_index < 0 or point_index >= len(self._time):
+            self._hide_interactive_elements()
+            return
+
+        x_value = self._time[point_index]
+
+        # Show the vertical crosshair line
+        self.v_line.setPos(x_value)
+        self.v_line.show()
+
+        show_alt = self.cb_altitude.isChecked() and self._has_altitude
+        show_speed = self.cb_speed.isChecked() and self._has_speed
+        show_hr = self.cb_hr.isChecked() and self._has_hr
+
+        lines = []
+
+        if show_alt:
+            y_alt = self._altitudes[point_index]
+            self.marker_alt.setData([x_value], [y_alt])
+            self.marker_alt.show()
+            lines.append(f"Alt: {y_alt:.1f} m")
+        else:
+            self.marker_alt.hide()
+
+        if show_speed:
+            y_spd = self._speeds[point_index]
+            self.marker_speed.setData([x_value], [y_spd])
+            self.marker_speed.show()
+            lines.append(f"Vel: {y_spd:.1f} km/h")
+        else:
+            self.marker_speed.hide()
+
+        if show_hr:
+            y_hr = self._heart_rates[point_index]
+            self.marker_hr.setData([x_value], [y_hr])
+            self.marker_hr.show()
+            lines.append(f"Cardio: {int(y_hr)} bpm")
+        else:
+            self.marker_hr.hide()
+
+        if lines:
+            x_formatted = format_time_axis(x_value) if self._x_mode == "Tempo" else f"{x_value:.2f} km"
+            self.label.setText(f"X: {x_formatted}\n" + "\n".join(lines))
+            self.label.show()
+        else:
+            self.label.hide()
+
+        # Emit signal for map synchronization
+        y_val_emit = self._speeds[point_index] if self._has_speed else (self._altitudes[point_index] if self._has_altitude else 0.0)
+        self.point_hovered.emit(point_index, float(x_value), float(y_val_emit))
+
     def clear_graph(self):
         """Clear the graph state and remove the plotted lines."""
         self._time = np.array([])
