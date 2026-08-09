@@ -296,12 +296,12 @@ class SegmentDetailDialog(QDialog):
             "Bucket",
             "Tempo A",
             "Tempo B",
+            "Δ Tempo",
             "Vel A (km/h)",
             "Vel B (km/h)",
+            "Δ Vel (km/h)",
             "FC A (bpm)",
             "FC B (bpm)",
-            "Δ Tempo",
-            "Δ Vel (km/h)",
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -314,19 +314,221 @@ class SegmentDetailDialog(QDialog):
         self.table.viewport().installEventFilter(self)
         layout.addWidget(self.table)
 
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.table)
+
+        self.time_table = QTableWidget()
+        self.time_table.setColumnCount(9)
+        self.time_table.setHorizontalHeaderLabels([
+            "Bucket",
+            "Dist A (m)",
+            "Dist B (m)",
+            "Δ Dist (m)",
+            "Vel A (km/h)",
+            "Vel B (km/h)",
+            "Δ Vel (km/h)",
+            "FC A (bpm)",
+            "FC B (bpm)",
+        ])
+        self.time_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.time_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.time_table.setColumnWidth(0, 80)
+        self.time_table.verticalHeader().setVisible(False)
+        self.time_table.setAlternatingRowColors(True)
+        self.time_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.time_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.time_table.cellClicked.connect(self._on_time_cell_clicked)
+        self.time_table.viewport().installEventFilter(self)
+        splitter.addWidget(self.time_table)
+
+        layout.addWidget(splitter)
+
         self._populate_points()
+        self._populate_time_buckets()
+
+    def _populate_time_buckets(self):
+        a_start = self.segment.get("a_start_idx", 0)
+        a_end = self.segment.get("a_end_idx", 0)
+        b_start = self.segment.get("b_start_idx", 0)
+        b_end = self.segment.get("b_end_idx", 0)
+
+        points_a = self._points_a
+        points_b = self._points_b
+
+        start_ts_a = getattr(points_a[0], "timestamp", None) if points_a else None
+        start_ts_b = getattr(points_b[0], "timestamp", None) if points_b else None
+
+        bucket_seconds = 30.0
+        max_time = 0.0
+        if points_a and start_ts_a is not None:
+            max_time = max(max_time, (points_a[-1].timestamp - start_ts_a).total_seconds())
+        if points_b and start_ts_b is not None:
+            max_time = max(max_time, (points_b[-1].timestamp - start_ts_b).total_seconds())
+
+        num_buckets = int(max_time / bucket_seconds) + 1 if max_time > 0 else 0
+        buckets = []
+        for _ in range(num_buckets):
+            buckets.append({
+                "a_points": [],
+                "b_points": [],
+                "a_indices": [],
+                "b_indices": [],
+                "a_start_dist": 0.0,
+                "b_start_dist": 0.0,
+                "a_end_dist": 0.0,
+                "b_end_dist": 0.0,
+            })
+
+        dists_a = self._dists_a if hasattr(self, "_dists_a") else [0.0]
+        dists_b = self._dists_b if hasattr(self, "_dists_b") else [0.0]
+
+        for i, p in enumerate(points_a):
+            if start_ts_a is None or getattr(p, "timestamp", None) is None:
+                continue
+            rel = (p.timestamp - start_ts_a).total_seconds()
+            b_idx = int(rel / bucket_seconds)
+            if b_idx < num_buckets:
+                if not buckets[b_idx]["a_points"]:
+                    buckets[b_idx]["a_start_dist"] = dists_a[i]
+                    buckets[b_idx]["a_indices"].append(a_start + i)
+                buckets[b_idx]["a_end_dist"] = dists_a[i]
+                buckets[b_idx]["a_points"].append(p)
+                buckets[b_idx]["a_indices"].append(a_start + i)
+
+        for i, p in enumerate(points_b):
+            if start_ts_b is None or getattr(p, "timestamp", None) is None:
+                continue
+            rel = (p.timestamp - start_ts_b).total_seconds()
+            b_idx = int(rel / bucket_seconds)
+            if b_idx < num_buckets:
+                if not buckets[b_idx]["b_points"]:
+                    buckets[b_idx]["b_start_dist"] = dists_b[i]
+                    buckets[b_idx]["b_indices"].append(b_start + i)
+                buckets[b_idx]["b_end_dist"] = dists_b[i]
+                buckets[b_idx]["b_points"].append(p)
+                buckets[b_idx]["b_indices"].append(b_start + i)
+
+        self.time_table.setRowCount(num_buckets)
+
+        self._time_rep_points_a = []
+        self._time_rep_points_b = []
+        self._time_rep_starts_a = []
+        self._time_rep_starts_b = []
+
+        for b_idx, bucket in enumerate(buckets):
+            start_t = b_idx * bucket_seconds
+            end_t = (b_idx + 1) * bucket_seconds
+            item_num = QTableWidgetItem(f"{_format_duration(start_t)} – {_format_duration(end_t)}")
+            item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item_num.setToolTip("Mostra il bucket su entrambe le attività")
+            self.time_table.setItem(b_idx, 0, item_num)
+
+            if bucket["a_points"]:
+                mid_idx = len(bucket["a_points"]) // 2
+                rep_a = bucket["a_points"][mid_idx]
+                rep_a_idx = bucket["a_indices"][mid_idx]
+                dist_a = self._dists_a[rep_a_idx - a_start] if rep_a_idx - a_start < len(self._dists_a) else 0.0
+            else:
+                rep_a = None
+                rep_a_idx = a_start
+                dist_a = 0.0
+
+            self._time_rep_points_a.append(rep_a)
+            self._time_rep_starts_a.append(rep_a_idx)
+            item_da = QTableWidgetItem(f"{dist_a:.0f}")
+            item_da.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 1, item_da)
+
+            if bucket["b_points"]:
+                mid_idx = len(bucket["b_points"]) // 2
+                rep_b = bucket["b_points"][mid_idx]
+                rep_b_idx = bucket["b_indices"][mid_idx]
+                dist_b = self._dists_b[rep_b_idx - b_start] if rep_b_idx - b_start < len(self._dists_b) else 0.0
+            else:
+                rep_b = None
+                rep_b_idx = b_start
+                dist_b = 0.0
+
+            self._time_rep_points_b.append(rep_b)
+            self._time_rep_starts_b.append(rep_b_idx)
+            item_db = QTableWidgetItem(f"{dist_b:.0f}")
+            item_db.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 2, item_db)
+
+            delta = dist_b - dist_a if dist_b is not None and dist_a is not None else None
+            item_delta = QTableWidgetItem(f"{delta:+.0f}" if delta is not None else "N/A")
+            item_delta.setForeground(QBrush(QColor("#2ecc71" if delta is not None and delta >= 0 else "#e74c3c")))
+            item_delta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 3, item_delta)
+
+            speeds_a = []
+            for idx in bucket["a_indices"]:
+                if idx > a_start and idx - a_start - 1 < len(points_a):
+                    spd = calculate_point_speed(points_a[idx - a_start - 1], points_a[idx - a_start])
+                    if spd is not None:
+                        speeds_a.append(spd)
+            avg_speed_a = sum(speeds_a) / len(speeds_a) if speeds_a else None
+            item_sa = QTableWidgetItem(f"{avg_speed_a:.1f}" if avg_speed_a is not None else "N/A")
+            item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 4, item_sa)
+
+            speeds_b = []
+            for idx in bucket["b_indices"]:
+                if idx > b_start and idx - b_start - 1 < len(points_b):
+                    spd = calculate_point_speed(points_b[idx - b_start - 1], points_b[idx - b_start])
+                    if spd is not None:
+                        speeds_b.append(spd)
+            avg_speed_b = sum(speeds_b) / len(speeds_b) if speeds_b else None
+            item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
+            item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 5, item_sb)
+
+            hrs_a = [getattr(p, "heart_rate", None) for p in bucket["a_points"] if getattr(p, "heart_rate", None) is not None]
+            avg_hr_a = sum(hrs_a) / len(hrs_a) if hrs_a else None
+            item_ha = QTableWidgetItem(str(int(round(avg_hr_a))) if avg_hr_a is not None else "N/A")
+            item_ha.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 7, item_ha)
+
+            hrs_b = [getattr(p, "heart_rate", None) for p in bucket["b_points"] if getattr(p, "heart_rate", None) is not None]
+            avg_hr_b = sum(hrs_b) / len(hrs_b) if hrs_b else None
+            item_hb = QTableWidgetItem(str(int(round(avg_hr_b))) if avg_hr_b is not None else "N/A")
+            item_hb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 8, item_hb)
+
+            if avg_speed_a is not None and avg_speed_b is not None:
+                diff = avg_speed_b - avg_speed_a
+                item_ds = QTableWidgetItem(f"{diff:+.1f}")
+                item_ds.setForeground(QBrush(QColor("#2ecc71" if diff > 0 else "#e74c3c")))
+            else:
+                item_ds = QTableWidgetItem("N/A")
+            item_ds.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 6, item_ds)
+
+    def _on_time_cell_clicked(self, row, column):
+        if row < 0 or row >= len(self._time_rep_points_a):
+            return
+
+        if self._time_rep_points_a[row] is not None:
+            self.point_selected.emit("A", self._time_rep_starts_a[row])
+
+        if self._time_rep_points_b[row] is not None:
+            self.point_selected.emit("B", self._time_rep_starts_b[row])
 
     def eventFilter(self, obj, event):
-        if obj is self.table.viewport():
+        if obj is self.table.viewport() or obj is self.time_table.viewport():
             if event.type() == QEvent.Type.MouseMove:
+                table = self.table if obj is self.table.viewport() else self.time_table
                 pos = event.pos()
-                index = self.table.indexAt(pos)
+                index = table.indexAt(pos)
                 if index.column() == 0:
-                    self.table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+                    table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
                 else:
-                    self.table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+                    table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             elif event.type() == QEvent.Type.Leave:
-                self.table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+                if obj is self.table.viewport():
+                    self.table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+                else:
+                    self.time_table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         return super().eventFilter(obj, event)
 
     def _populate_points(self):
@@ -386,6 +588,9 @@ class SegmentDetailDialog(QDialog):
         self._rep_starts_a = []
         self._rep_starts_b = []
 
+        self._dists_a = dists_a
+        self._dists_b = dists_b
+
         for b_idx, bucket in enumerate(buckets):
             start_dist = b_idx * bucket_size
             end_dist = (b_idx + 1) * bucket_size
@@ -441,7 +646,6 @@ class SegmentDetailDialog(QDialog):
             avg_speed_a = sum(speeds_a) / len(speeds_a) if speeds_a else None
             item_sa = QTableWidgetItem(f"{avg_speed_a:.1f}" if avg_speed_a is not None else "N/A")
             item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 3, item_sa)
 
             speeds_b = []
             for idx in bucket["b_indices"]:
@@ -452,19 +656,16 @@ class SegmentDetailDialog(QDialog):
             avg_speed_b = sum(speeds_b) / len(speeds_b) if speeds_b else None
             item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
             item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 4, item_sb)
 
             hrs_a = [getattr(p, "heart_rate", None) for p in bucket["a_points"] if getattr(p, "heart_rate", None) is not None]
             avg_hr_a = sum(hrs_a) / len(hrs_a) if hrs_a else None
             item_ha = QTableWidgetItem(str(int(round(avg_hr_a))) if avg_hr_a is not None else "N/A")
             item_ha.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 5, item_ha)
 
             hrs_b = [getattr(p, "heart_rate", None) for p in bucket["b_points"] if getattr(p, "heart_rate", None) is not None]
             avg_hr_b = sum(hrs_b) / len(hrs_b) if hrs_b else None
             item_hb = QTableWidgetItem(str(int(round(avg_hr_b))) if avg_hr_b is not None else "N/A")
             item_hb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 6, item_hb)
 
             if rep_a and rep_b and getattr(rep_a, "timestamp", None) is not None and getattr(rep_b, "timestamp", None) is not None and start_ts_a is not None and start_ts_b is not None:
                 rel_a = (rep_a.timestamp - start_ts_a).total_seconds()
@@ -475,7 +676,6 @@ class SegmentDetailDialog(QDialog):
             else:
                 item_dt = QTableWidgetItem("N/A")
             item_dt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 7, item_dt)
 
             if avg_speed_a is not None and avg_speed_b is not None:
                 diff = avg_speed_b - avg_speed_a
@@ -484,7 +684,13 @@ class SegmentDetailDialog(QDialog):
             else:
                 item_ds = QTableWidgetItem("N/A")
             item_ds.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(b_idx, 8, item_ds)
+
+            self.table.setItem(b_idx, 3, item_dt)
+            self.table.setItem(b_idx, 4, item_sa)
+            self.table.setItem(b_idx, 5, item_sb)
+            self.table.setItem(b_idx, 6, item_ds)
+            self.table.setItem(b_idx, 7, item_ha)
+            self.table.setItem(b_idx, 8, item_hb)
 
     def _on_detail_cell_clicked(self, row, column):
         if row < 0 or row >= len(self._rep_points_a):
