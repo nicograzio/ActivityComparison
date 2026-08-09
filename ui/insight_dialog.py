@@ -44,14 +44,20 @@ def _get_speed_kmh(point):
     return None
 
 
-def _format_duration(seconds):
-    """Format a duration in seconds to MM:SS or HH:MM:SS."""
+def _format_duration(seconds, decimals=0):
+    """Format a duration in seconds to MM:SS or HH:MM:SS, with optional decimals."""
     if seconds is None:
         return "N/A"
-    seconds = int(round(seconds))
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
+    total = float(seconds)
+    hours = int(total) // 3600
+    minutes = (int(total) % 3600) // 60
+    if decimals and decimals > 0:
+        secs = total % 60
+        fmt = f"{{:0{2 + decimals + 1}.{decimals}f}}"
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{fmt.format(secs)}"
+        return f"{minutes}:{fmt.format(secs)}"
+    secs = int(total) % 60
     if hours > 0:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
@@ -291,17 +297,18 @@ class SegmentDetailDialog(QDialog):
         layout.addWidget(summary_label)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
             "Bucket",
             "Tempo A",
             "Tempo B",
             "Δ Tempo",
+            "Tempo Compl A",
+            "Tempo Compl B",
+            "Δ Tempo Compl",
             "Vel A (km/h)",
             "Vel B (km/h)",
             "Δ Vel (km/h)",
-            "FC A (bpm)",
-            "FC B (bpm)",
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -318,17 +325,18 @@ class SegmentDetailDialog(QDialog):
         splitter.addWidget(self.table)
 
         self.time_table = QTableWidget()
-        self.time_table.setColumnCount(9)
+        self.time_table.setColumnCount(10)
         self.time_table.setHorizontalHeaderLabels([
             "Bucket",
             "Dist A (m)",
             "Dist B (m)",
             "Δ Dist (m)",
+            "Dist Coperta A (m)",
+            "Dist Coperta B (m)",
+            "Δ Dist Coperta (m)",
             "Vel A (km/h)",
             "Vel B (km/h)",
             "Δ Vel (km/h)",
-            "FC A (bpm)",
-            "FC B (bpm)",
         ])
         self.time_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.time_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -345,6 +353,26 @@ class SegmentDetailDialog(QDialog):
 
         self._populate_points()
         self._populate_time_buckets()
+
+    def _interpolate_dist_at_seconds(self, points, dists, target_seconds, start_ts):
+        """Interpola la distanza cumulativa (in metri) al momento esatto `target_seconds`
+        dall'inizio, lineare tra i due campioni che 'attraversano' quell'istante."""
+        if start_ts is None or not points or target_seconds <= 0:
+            return None
+        for i in range(1, len(points)):
+            t0 = getattr(points[i - 1], "timestamp", None)
+            t1 = getattr(points[i], "timestamp", None)
+            if t0 is None or t1 is None:
+                continue
+            s0 = (t0 - start_ts).total_seconds()
+            s1 = (t1 - start_ts).total_seconds()
+            if s1 >= target_seconds:
+                if s1 <= s0:
+                    return None
+                frac = (target_seconds - s0) / (s1 - s0)
+                d0, d1 = dists[i - 1], dists[i]
+                return d0 + (d1 - d0) * frac
+        return None
 
     def _populate_time_buckets(self):
         a_start = self.segment.get("a_start_idx", 0)
@@ -377,6 +405,10 @@ class SegmentDetailDialog(QDialog):
                 "b_start_dist": 0.0,
                 "a_end_dist": 0.0,
                 "b_end_dist": 0.0,
+                "a_last_point": None,
+                "b_last_point": None,
+                "a_last_index": None,
+                "b_last_index": None,
             })
 
         dists_a = self._dists_a if hasattr(self, "_dists_a") else [0.0]
@@ -394,6 +426,8 @@ class SegmentDetailDialog(QDialog):
                 buckets[b_idx]["a_end_dist"] = dists_a[i]
                 buckets[b_idx]["a_points"].append(p)
                 buckets[b_idx]["a_indices"].append(a_start + i)
+                buckets[b_idx]["a_last_point"] = p
+                buckets[b_idx]["a_last_index"] = a_start + i
 
         for i, p in enumerate(points_b):
             if start_ts_b is None or getattr(p, "timestamp", None) is None:
@@ -407,6 +441,8 @@ class SegmentDetailDialog(QDialog):
                 buckets[b_idx]["b_end_dist"] = dists_b[i]
                 buckets[b_idx]["b_points"].append(p)
                 buckets[b_idx]["b_indices"].append(b_start + i)
+                buckets[b_idx]["b_last_point"] = p
+                buckets[b_idx]["b_last_index"] = b_start + i
 
         self.time_table.setRowCount(num_buckets)
 
@@ -414,6 +450,29 @@ class SegmentDetailDialog(QDialog):
         self._time_rep_points_b = []
         self._time_rep_starts_a = []
         self._time_rep_starts_b = []
+
+        # Distanza cumulativa (interpolata) raggiunta ESATTAMENTE alla fine di ogni
+        # bucket temporale (30 s, 60 s, ...), così A e B sono confrontati sullo stesso
+        # istante indipendentemente dal campionamento GPS.
+        # Se il bucket è oltre la durata del segmento, il confine viene "chiuso"
+        # al tempo finale reale della traccia (ultimo bucket parziale).
+        max_secs_a = (points_a[-1].timestamp - start_ts_a).total_seconds() if points_a and start_ts_a else 0.0
+        max_secs_b = (points_b[-1].timestamp - start_ts_b).total_seconds() if points_b and start_ts_b else 0.0
+
+        cum_dists_a = [
+            None if k * bucket_seconds >= max_secs_a
+            else self._interpolate_dist_at_seconds(
+                points_a, dists_a, min((k + 1) * bucket_seconds, max_secs_a), start_ts_a
+            )
+            for k in range(num_buckets)
+        ]
+        cum_dists_b = [
+            None if k * bucket_seconds >= max_secs_b
+            else self._interpolate_dist_at_seconds(
+                points_b, dists_b, min((k + 1) * bucket_seconds, max_secs_b), start_ts_b
+            )
+            for k in range(num_buckets)
+        ]
 
         for b_idx, bucket in enumerate(buckets):
             start_t = b_idx * bucket_seconds
@@ -423,43 +482,63 @@ class SegmentDetailDialog(QDialog):
             item_num.setToolTip("Mostra il bucket su entrambe le attività")
             self.time_table.setItem(b_idx, 0, item_num)
 
+            # --- Distanza cumulativa al confine ESATTO di ogni bucket temporale (interpolato) ---
+            cum_dist_a = cum_dists_a[b_idx]
+            cum_dist_b = cum_dists_b[b_idx]
+
+            # Punto rappresentativo per il click (ultimo campione reale del bucket)
             if bucket["a_points"]:
-                mid_idx = len(bucket["a_points"]) // 2
-                rep_a = bucket["a_points"][mid_idx]
-                rep_a_idx = bucket["a_indices"][mid_idx]
-                dist_a = self._dists_a[rep_a_idx - a_start] if rep_a_idx - a_start < len(self._dists_a) else 0.0
+                rep_a = bucket["a_last_point"]
+                rep_a_idx = bucket["a_last_index"]
             else:
                 rep_a = None
                 rep_a_idx = a_start
-                dist_a = 0.0
 
             self._time_rep_points_a.append(rep_a)
             self._time_rep_starts_a.append(rep_a_idx)
-            item_da = QTableWidgetItem(f"{dist_a:.0f}")
+            item_da = QTableWidgetItem(f"{cum_dist_a:.1f}" if cum_dist_a is not None else "N/A")
             item_da.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 1, item_da)
 
             if bucket["b_points"]:
-                mid_idx = len(bucket["b_points"]) // 2
-                rep_b = bucket["b_points"][mid_idx]
-                rep_b_idx = bucket["b_indices"][mid_idx]
-                dist_b = self._dists_b[rep_b_idx - b_start] if rep_b_idx - b_start < len(self._dists_b) else 0.0
+                rep_b = bucket["b_last_point"]
+                rep_b_idx = bucket["b_last_index"]
             else:
                 rep_b = None
                 rep_b_idx = b_start
-                dist_b = 0.0
 
             self._time_rep_points_b.append(rep_b)
             self._time_rep_starts_b.append(rep_b_idx)
-            item_db = QTableWidgetItem(f"{dist_b:.0f}")
+            item_db = QTableWidgetItem(f"{cum_dist_b:.1f}" if cum_dist_b is not None else "N/A")
             item_db.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 2, item_db)
 
-            delta = dist_b - dist_a if dist_b is not None and dist_a is not None else None
-            item_delta = QTableWidgetItem(f"{delta:+.0f}" if delta is not None else "N/A")
+            delta = cum_dist_b - cum_dist_a if cum_dist_b is not None and cum_dist_a is not None else None
+            item_delta = QTableWidgetItem(f"{delta:+.1f}" if delta is not None else "N/A")
             item_delta.setForeground(QBrush(QColor("#2ecc71" if delta is not None and delta >= 0 else "#e74c3c")))
             item_delta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 3, item_delta)
+
+            # --- Distanza coperta nel singolo bucket = confine corrente - confine precedente ---
+            prev_dist_a = cum_dists_a[b_idx - 1] if b_idx > 0 and cum_dists_a[b_idx - 1] is not None else 0.0
+            prev_dist_b = cum_dists_b[b_idx - 1] if b_idx > 0 and cum_dists_b[b_idx - 1] is not None else 0.0
+
+            covered_a = cum_dist_a - prev_dist_a if cum_dist_a is not None and prev_dist_a is not None else None
+            covered_b = cum_dist_b - prev_dist_b if cum_dist_b is not None and prev_dist_b is not None else None
+
+            item_ca = QTableWidgetItem(f"{covered_a:.1f}" if covered_a is not None else "N/A")
+            item_ca.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 4, item_ca)
+
+            item_cb = QTableWidgetItem(f"{covered_b:.1f}" if covered_b is not None else "N/A")
+            item_cb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 5, item_cb)
+
+            delta_c = covered_b - covered_a if covered_b is not None and covered_a is not None else None
+            item_dc = QTableWidgetItem(f"{delta_c:+.1f}" if delta_c is not None else "N/A")
+            item_dc.setForeground(QBrush(QColor("#2ecc71" if delta_c is not None and delta_c >= 0 else "#e74c3c")))
+            item_dc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.time_table.setItem(b_idx, 6, item_dc)
 
             speeds_a = []
             for idx in bucket["a_indices"]:
@@ -470,7 +549,7 @@ class SegmentDetailDialog(QDialog):
             avg_speed_a = sum(speeds_a) / len(speeds_a) if speeds_a else None
             item_sa = QTableWidgetItem(f"{avg_speed_a:.1f}" if avg_speed_a is not None else "N/A")
             item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.time_table.setItem(b_idx, 4, item_sa)
+            self.time_table.setItem(b_idx, 7, item_sa)
 
             speeds_b = []
             for idx in bucket["b_indices"]:
@@ -481,19 +560,7 @@ class SegmentDetailDialog(QDialog):
             avg_speed_b = sum(speeds_b) / len(speeds_b) if speeds_b else None
             item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
             item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.time_table.setItem(b_idx, 5, item_sb)
-
-            hrs_a = [getattr(p, "heart_rate", None) for p in bucket["a_points"] if getattr(p, "heart_rate", None) is not None]
-            avg_hr_a = sum(hrs_a) / len(hrs_a) if hrs_a else None
-            item_ha = QTableWidgetItem(str(int(round(avg_hr_a))) if avg_hr_a is not None else "N/A")
-            item_ha.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.time_table.setItem(b_idx, 7, item_ha)
-
-            hrs_b = [getattr(p, "heart_rate", None) for p in bucket["b_points"] if getattr(p, "heart_rate", None) is not None]
-            avg_hr_b = sum(hrs_b) / len(hrs_b) if hrs_b else None
-            item_hb = QTableWidgetItem(str(int(round(avg_hr_b))) if avg_hr_b is not None else "N/A")
-            item_hb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.time_table.setItem(b_idx, 8, item_hb)
+            self.time_table.setItem(b_idx, 8, item_sb)
 
             if avg_speed_a is not None and avg_speed_b is not None:
                 diff = avg_speed_b - avg_speed_a
@@ -502,7 +569,7 @@ class SegmentDetailDialog(QDialog):
             else:
                 item_ds = QTableWidgetItem("N/A")
             item_ds.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.time_table.setItem(b_idx, 6, item_ds)
+            self.time_table.setItem(b_idx, 9, item_ds)
 
     def _on_time_cell_clicked(self, row, column):
         if row < 0 or row >= len(self._time_rep_points_a):
@@ -530,6 +597,28 @@ class SegmentDetailDialog(QDialog):
                 else:
                     self.time_table.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         return super().eventFilter(obj, event)
+
+    def _interpolate_seconds_at_dist(self, points, dists, target_dist, start_ts):
+        """Interpola il tempo (in secondi dall'inizio) al punto esatto in cui la traccia
+        raggiunge `target_dist` metri.
+
+        Usa l'interpolazione lineare tra i due campioni GPS che 'attraversano' la distanza
+        target, così A e B vengono confrontati esattamente sulla stessa distanza anche se
+        il campionamento non ha un punto a quella distanza.
+        """
+        if start_ts is None or not points or target_dist <= 0:
+            return None
+        for i in range(1, len(dists)):
+            if dists[i] >= target_dist:
+                d0, d1 = dists[i - 1], dists[i]
+                t0 = getattr(points[i - 1], "timestamp", None)
+                t1 = getattr(points[i], "timestamp", None)
+                if t0 is None or t1 is None or d1 <= d0:
+                    return None
+                frac = (target_dist - d0) / (d1 - d0)
+                interp_ts = t0 + (t1 - t0) * frac
+                return (interp_ts - start_ts).total_seconds()
+        return None
 
     def _populate_points(self):
         a_start = self.segment.get("a_start_idx", 0)
@@ -567,19 +656,37 @@ class SegmentDetailDialog(QDialog):
                 "b_points": [],
                 "a_indices": [],
                 "b_indices": [],
+                "a_first_point": None,
+                "b_first_point": None,
+                "a_first_index": None,
+                "b_first_index": None,
+                "a_last_point": None,
+                "b_last_point": None,
+                "a_last_index": None,
+                "b_last_index": None,
             })
 
         for i, d in enumerate(dists_a):
             b_idx = int(d / bucket_size)
             if b_idx < num_buckets:
+                if not buckets[b_idx]["a_points"]:
+                    buckets[b_idx]["a_first_point"] = points_a[i]
+                    buckets[b_idx]["a_first_index"] = a_start + i
                 buckets[b_idx]["a_points"].append(points_a[i])
                 buckets[b_idx]["a_indices"].append(a_start + i)
+                buckets[b_idx]["a_last_point"] = points_a[i]
+                buckets[b_idx]["a_last_index"] = a_start + i
 
         for i, d in enumerate(dists_b):
             b_idx = int(d / bucket_size)
             if b_idx < num_buckets:
+                if not buckets[b_idx]["b_points"]:
+                    buckets[b_idx]["b_first_point"] = points_b[i]
+                    buckets[b_idx]["b_first_index"] = b_start + i
                 buckets[b_idx]["b_points"].append(points_b[i])
                 buckets[b_idx]["b_indices"].append(b_start + i)
+                buckets[b_idx]["b_last_point"] = points_b[i]
+                buckets[b_idx]["b_last_index"] = b_start + i
 
         self.table.setRowCount(num_buckets)
 
@@ -591,6 +698,29 @@ class SegmentDetailDialog(QDialog):
         self._dists_a = dists_a
         self._dists_b = dists_b
 
+        # Tempo (interpolato) per raggiungere ESATTAMENTE la fine di ogni bucket
+        # (50 m, 100 m, ...), in modo che A e B siano confrontati sulla stessa
+        # distanza indipendentemente dal campionamento GPS.
+        # Se il bucket è oltre la lunghezza del segmento, il confine viene "chiuso"
+        # alla distanza finale reale della traccia (ultimo bucket parziale).
+        max_a = dists_a[-1] if dists_a else 0.0
+        max_b = dists_b[-1] if dists_b else 0.0
+
+        cum_ts_a = [
+            None if k * bucket_size >= max_a
+            else self._interpolate_seconds_at_dist(
+                points_a, dists_a, min((k + 1) * bucket_size, max_a), start_ts_a
+            )
+            for k in range(num_buckets)
+        ]
+        cum_ts_b = [
+            None if k * bucket_size >= max_b
+            else self._interpolate_seconds_at_dist(
+                points_b, dists_b, min((k + 1) * bucket_size, max_b), start_ts_b
+            )
+            for k in range(num_buckets)
+        ]
+
         for b_idx, bucket in enumerate(buckets):
             start_dist = b_idx * bucket_size
             end_dist = (b_idx + 1) * bucket_size
@@ -600,9 +730,8 @@ class SegmentDetailDialog(QDialog):
             self.table.setItem(b_idx, 0, item_num)
 
             if bucket["a_points"]:
-                mid_idx = len(bucket["a_points"]) // 2
-                rep_a = bucket["a_points"][mid_idx]
-                rep_a_idx = bucket["a_indices"][mid_idx]
+                rep_a = bucket["a_last_point"]
+                rep_a_idx = bucket["a_last_index"]
             else:
                 rep_a = None
                 rep_a_idx = a_start
@@ -611,9 +740,8 @@ class SegmentDetailDialog(QDialog):
             self._rep_starts_a.append(rep_a_idx)
 
             if bucket["b_points"]:
-                mid_idx = len(bucket["b_points"]) // 2
-                rep_b = bucket["b_points"][mid_idx]
-                rep_b_idx = bucket["b_indices"][mid_idx]
+                rep_b = bucket["b_last_point"]
+                rep_b_idx = bucket["b_last_index"]
             else:
                 rep_b = None
                 rep_b_idx = b_start
@@ -621,19 +749,15 @@ class SegmentDetailDialog(QDialog):
             self._rep_points_b.append(rep_b)
             self._rep_starts_b.append(rep_b_idx)
 
-            if rep_a and getattr(rep_a, "timestamp", None) is not None and start_ts_a is not None:
-                rel_a = (rep_a.timestamp - start_ts_a).total_seconds()
-                item_ta = QTableWidgetItem(_format_duration(rel_a))
-            else:
-                item_ta = QTableWidgetItem("N/A")
+            # --- Tempo cumulativo al confine ESATTO del bucket (interpolato) ---
+            cum_a = cum_ts_a[b_idx]
+            cum_b = cum_ts_b[b_idx]
+
+            item_ta = QTableWidgetItem(_format_duration(cum_a, 1) if cum_a is not None else "N/A")
             item_ta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(b_idx, 1, item_ta)
 
-            if rep_b and getattr(rep_b, "timestamp", None) is not None and start_ts_b is not None:
-                rel_b = (rep_b.timestamp - start_ts_b).total_seconds()
-                item_tb = QTableWidgetItem(_format_duration(rel_b))
-            else:
-                item_tb = QTableWidgetItem("N/A")
+            item_tb = QTableWidgetItem(_format_duration(cum_b, 1) if cum_b is not None else "N/A")
             item_tb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(b_idx, 2, item_tb)
 
@@ -657,21 +781,9 @@ class SegmentDetailDialog(QDialog):
             item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
             item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            hrs_a = [getattr(p, "heart_rate", None) for p in bucket["a_points"] if getattr(p, "heart_rate", None) is not None]
-            avg_hr_a = sum(hrs_a) / len(hrs_a) if hrs_a else None
-            item_ha = QTableWidgetItem(str(int(round(avg_hr_a))) if avg_hr_a is not None else "N/A")
-            item_ha.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            hrs_b = [getattr(p, "heart_rate", None) for p in bucket["b_points"] if getattr(p, "heart_rate", None) is not None]
-            avg_hr_b = sum(hrs_b) / len(hrs_b) if hrs_b else None
-            item_hb = QTableWidgetItem(str(int(round(avg_hr_b))) if avg_hr_b is not None else "N/A")
-            item_hb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            if rep_a and rep_b and getattr(rep_a, "timestamp", None) is not None and getattr(rep_b, "timestamp", None) is not None and start_ts_a is not None and start_ts_b is not None:
-                rel_a = (rep_a.timestamp - start_ts_a).total_seconds()
-                rel_b = (rep_b.timestamp - start_ts_b).total_seconds()
-                diff = rel_b - rel_a
-                item_dt = QTableWidgetItem(f"{diff:+.0f}s")
+            if cum_a is not None and cum_b is not None:
+                diff = cum_b - cum_a
+                item_dt = QTableWidgetItem(f"{diff:+.1f}s")
                 item_dt.setForeground(QBrush(QColor("#2ecc71" if diff < 0 else "#e74c3c")))
             else:
                 item_dt = QTableWidgetItem("N/A")
@@ -685,12 +797,34 @@ class SegmentDetailDialog(QDialog):
                 item_ds = QTableWidgetItem("N/A")
             item_ds.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            # --- Durata del singolo bucket = tempo al confine corrente - tempo al confine precedente ---
+            prev_cum_a = cum_ts_a[b_idx - 1] if b_idx > 0 and cum_ts_a[b_idx - 1] is not None else 0.0
+            prev_cum_b = cum_ts_b[b_idx - 1] if b_idx > 0 and cum_ts_b[b_idx - 1] is not None else 0.0
+
+            dur_a = cum_a - prev_cum_a if cum_a is not None and prev_cum_a is not None else None
+            dur_b = cum_b - prev_cum_b if cum_b is not None and prev_cum_b is not None else None
+
+            item_ta_compl = QTableWidgetItem(_format_duration(dur_a, 1) if dur_a is not None else "N/A")
+            item_ta_compl.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            item_tb_compl = QTableWidgetItem(_format_duration(dur_b, 1) if dur_b is not None else "N/A")
+            item_tb_compl.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            if dur_a is not None and dur_b is not None:
+                diff_compl = dur_b - dur_a
+                item_dt_compl = QTableWidgetItem(f"{diff_compl:+.1f}s")
+                item_dt_compl.setForeground(QBrush(QColor("#2ecc71" if diff_compl < 0 else "#e74c3c")))
+            else:
+                item_dt_compl = QTableWidgetItem("N/A")
+            item_dt_compl.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
             self.table.setItem(b_idx, 3, item_dt)
-            self.table.setItem(b_idx, 4, item_sa)
-            self.table.setItem(b_idx, 5, item_sb)
-            self.table.setItem(b_idx, 6, item_ds)
-            self.table.setItem(b_idx, 7, item_ha)
-            self.table.setItem(b_idx, 8, item_hb)
+            self.table.setItem(b_idx, 4, item_ta_compl)
+            self.table.setItem(b_idx, 5, item_tb_compl)
+            self.table.setItem(b_idx, 6, item_dt_compl)
+            self.table.setItem(b_idx, 7, item_sa)
+            self.table.setItem(b_idx, 8, item_sb)
+            self.table.setItem(b_idx, 9, item_ds)
 
     def _on_detail_cell_clicked(self, row, column):
         if row < 0 or row >= len(self._rep_points_a):

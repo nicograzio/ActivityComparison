@@ -1,0 +1,11 @@
+{
+    "pythonVersion": "3.14",
+    "pythonPlatform": "Darwin",
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "pythonPath": "/usr/local/bin/python3"
+        }
+    ],
+    "reportMissingImports": true
+}
