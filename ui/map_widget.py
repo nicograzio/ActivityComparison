@@ -95,6 +95,30 @@ class MapWidget(QWidget):
 
         # Inject script to catch view changes, expose sync API, and draw track dynamically
         sync_script = """
+        <style>
+        .segment-label-start {
+            background: #FFD700;
+            border-radius: 50%;
+            text-align: center;
+            font-weight: bold;
+            font-size: 12px;
+            line-height: 20px;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        .segment-label-end {
+            background: #FFD700;
+            border-radius: 50%;
+            text-align: center;
+            font-weight: bold;
+            font-size: 12px;
+            line-height: 20px;
+            border: 2px solid #FF0000;
+            color: black;
+        }
+            color: black;
+        }
+        </style>
         <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script>
         function setupSync() {
@@ -281,16 +305,24 @@ class MapWidget(QWidget):
                                 }).addTo(map);
                                 window.highlightedSegmentLayers.push(polyline);
 
-                                // Add start marker for the segment
-                                var startMarker = L.circleMarker(segment.coords[0], {
-                                    radius: 10,
-                                    fillColor: '#FFD700',
-                                    color: '#FF6B00',
-                                    weight: 3,
-                                    opacity: 1,
-                                    fillOpacity: 0.9
-                                }).addTo(map);
+                                var iconStart = L.divIcon({
+                                    className: 'segment-label-start',
+                                    html: segment.id || '',
+                                    iconSize: [20, 20]
+                                });
+                                var iconEnd = L.divIcon({
+                                    className: 'segment-label-end',
+                                    html: segment.id || '',
+                                    iconSize: [20, 20]
+                                });
+
+                                // Start marker
+                                var startMarker = L.marker(segment.coords[0], {icon: iconStart}).addTo(map);
                                 window.highlightedSegmentLayers.push(startMarker);
+                                
+                                // End marker
+                                var endMarker = L.marker(segment.coords[segment.coords.length - 1], {icon: iconEnd}).addTo(map);
+                                window.highlightedSegmentLayers.push(endMarker);
                             }
                         });
                     };
@@ -456,7 +488,7 @@ class MapWidget(QWidget):
         )
         self.view.page().runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")
 
-    def draw_highlighted_segments(self, segments: list[dict]):
+    def draw_highlighted_segments(self, segments: list[dict], coord_key: str = "coords_a"):
         """Draw highlighted segments on the map.
 
         Called by:
@@ -464,16 +496,18 @@ class MapWidget(QWidget):
 
         Args:
             segments: List of segment dictionaries with ``coords_a`` and ``coords_b``
+            coord_key: Which coordinates to draw - "coords_a" for left track, "coords_b" for right track
         """
         self._highlighted_segments = segments
         if not self._ready:
             return
 
-        # Prepare segments data for JavaScript
+        # Prepare segments data for JavaScript - only draw the specified track's coordinates
         js_segments = []
         for seg in segments:
-            js_segments.append({"coords": seg.get("coords_a", [])})
-            js_segments.append({"coords": seg.get("coords_b", [])})
+            coords = seg.get(coord_key, [])
+            if coords:
+                js_segments.append({"coords": coords, "id": seg.get("id")})
 
         js_data = json.dumps(js_segments)
         self.view.page().runJavaScript(f"if (window.drawHighlightedSegments) window.drawHighlightedSegments({js_data});")

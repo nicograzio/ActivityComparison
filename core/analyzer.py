@@ -420,11 +420,25 @@ def trim_track_by_distance(track, start_distance_m, end_distance_m):
         append_point(points[0])
 
     return trimmed
-def find_common_segments(track_a: Track, track_b: Track, distance_threshold_m: float = 15.0, min_segment_length_m: float = 20.0) -> List[dict]:
+def find_common_segments(
+    track_a: Track,
+    track_b: Track,
+    distance_threshold_m: float = 15.0,
+    min_segment_length_m: float = 20.0,
+) -> List[dict]:
     """Individua i segmenti geograficamente comuni tra due tracce.
 
     Sfrutta un campionamento spaziale e raggruppa i tratti consecutivi che corrono
     a una distanza inferiore a ``distance_threshold_m``.
+
+    I campioni GPS dei due segmenti vengono mantenuti originali (nessun
+    ricampionamento): le lunghezze diverse vengono gestite in fase di confronto
+    interpolando i confini dei bucket, quindi l'ultimo bucket termina alla fine
+    della traccia più corta.
+
+    Restituisce il prodotto cartesiano di tutti i segmenti comuni di A e B,
+    quindi se una traccia passa più volte sullo stesso percorso, ogni combinazione
+    viene riportata separatamente.
     """
     if not track_a or not track_b or len(track_a.points) < 2 or len(track_b.points) < 2:
         return []
@@ -465,108 +479,253 @@ def find_common_segments(track_a: Track, track_b: Track, distance_threshold_m: f
             is_a_common[idx_a] = True
             matched_b_indices[idx_a] = best_b_idx
 
-    segments = []
-    in_segment = False
-    seg_start_a = 0
+    # Funzione helper per estrarre segmenti contigui da un array booleano
+    def _extract_segments(mask: np.ndarray, max_gap: int = 5) -> List[Tuple[int, int]]:
+        """Estrae segmenti contigui, tollerando piccoli gap fino a max_gap punti.
+        
+        Questo evita che un singolo punto GPS leggermente fuori soglia (es. jitter)
+        spezzi un segmento altrimenti valido in due tronconi separati.
+        """
+        segs = []
+        n = len(mask)
+        i = 0
+        while i < n:
+            if mask[i]:
+                start = i
+                last_true = i
+                while i < n:
+                    if mask[i]:
+                        last_true = i
+                    elif (i - last_true) > max_gap:
+                        # Abbiamo superato il gap massimo consentito
+                        break
+                    i += 1
+                segs.append((start, last_true))
+            else:
+                i += 1
+        return segs
 
-    for i in range(len(is_a_common)):
-        if is_a_common[i] and not in_segment:
-            in_segment = True
-            seg_start_a = i
-        elif not is_a_common[i] and in_segment:
-            in_segment = False
-            seg_end_a = i - 1
-            length_a = profile_a[seg_end_a] - profile_a[seg_start_a]
-            if length_a >= min_segment_length_m:
-                segments.append((seg_start_a, seg_end_a))
+    # Trova tutti i segmenti comuni in A
+    segments_a = _extract_segments(is_a_common, max_gap=8)
+    
+    # Per trovare i segmenti in B, corri il matching in direzione inversa:
+    # per ogni punto di B, trova il punto più vicino in A
+    grid_a = {}
+    for idx_a, (lat_a, lon_a) in enumerate(zip(lats_a, lons_a)):
+        cell = (int(lat_a / grid_size_deg), int(lon_a / grid_size_deg))
+        if cell not in grid_a:
+            grid_a[cell] = []
+        grid_a[cell].append(idx_a)
 
-    if in_segment:
-        seg_end_a = len(is_a_common) - 1
-        length_a = profile_a[seg_end_a] - profile_a[seg_start_a]
-        if length_a >= min_segment_length_m:
-            segments.append((seg_start_a, seg_end_a))
+    is_b_common = np.zeros(len(track_b.points), dtype=bool)
 
+    for idx_b, (lat_b, lon_b) in enumerate(zip(lats_b, lons_b)):
+        cell_b = (int(lat_b / grid_size_deg), int(lon_b / grid_size_deg))
+        min_dist = float("inf")
+
+        for d_lat in (-1, 0, 1):
+            for d_lon in (-1, 0, 1):
+                cell = (cell_b[0] + d_lat, cell_b[1] + d_lon)
+                if cell in grid_a:
+                    for idx_a in grid_a[cell]:
+                        dist = haversine_distance(track_b.points[idx_b], track_a.points[idx_a])
+                        if dist < min_dist:
+                            min_dist = dist
+
+        if min_dist <= distance_threshold_m:
+            is_b_common[idx_b] = True
+
+    segments_b = _extract_segments(is_b_common, max_gap=8)
+
+    # Filtra per lunghezza minima
+    segments_a = [(s, e) for s, e in segments_a if profile_a[e] - profile_a[s] >= min_segment_length_m]
+    segments_b = [(s, e) for s, e in segments_b if profile_b[e] - profile_b[s] >= min_segment_length_m]
+
+    if not segments_a or not segments_b:
+        return []
+
+    # Per ogni coppia di segmenti (A, B) individuati geograficamente, raffiniamo i confini
+    # per assicurarci che coprano esattamente lo stesso tratto e filtriamo i falsi positivi.
     result = []
-    for seg_idx, (a_start, a_end) in enumerate(segments, 1):
-        b_indices = [matched_b_indices[k] for k in range(a_start, a_end + 1) if matched_b_indices[k] != -1]
-        if not b_indices:
-            continue
-        b_start = min(b_indices)
-        b_end = max(b_indices)
+    seg_id = 1
+    
+    for a_start, a_end in segments_a:
+        for b_start_raw, b_end_raw in segments_b:
+            # Verifica se il segmento A ha punti che mappano a questo segmento B.
+            # Questo evita di accoppiare pezzi di traccia che sono vicini ma non correlati.
+            matching_indices = [i for i in range(a_start, a_end + 1) 
+                                if b_start_raw <= matched_b_indices[i] <= b_end_raw]
+            
+            # Se meno del 20% dei punti di A trova riscontro in questo blocco di B, saltiamo.
+            if len(matching_indices) < (a_end - a_start + 1) * 0.2:
+                continue
+                
+            # Raffinamento spaziale: cerchiamo in B il miglior match geografico per l'inizio e la fine di A.
+            # Questo elimina i metri extra ("pendolamento") ai confini.
+            best_b_start = b_start_raw
+            min_dist_start = float('inf')
+            best_b_end = b_end_raw
+            min_dist_end = float('inf')
+            
+            for i in range(b_start_raw, b_end_raw + 1):
+                d_start = haversine_distance(track_a.points[a_start], track_b.points[i])
+                if d_start < min_dist_start:
+                    min_dist_start = d_start
+                    best_b_start = i
+                
+                d_end = haversine_distance(track_a.points[a_end], track_b.points[i])
+                if d_end < min_dist_end:
+                    min_dist_end = d_end
+                    best_b_end = i
+            
+            b_start, b_end = best_b_start, best_b_end
+            if b_start > b_end:
+                b_start, b_end = b_end, b_start
+                
+            if (b_end - b_start) < 1:
+                continue
 
-        sub_pts_a = track_a.points[a_start:a_end + 1]
-        sub_pts_b = track_b.points[b_start:b_end + 1]
+            # Calcola la lunghezza effettiva della sovrapposizione (basata su A)
+            overlap_length = profile_a[a_end] - profile_a[a_start]
+            
+            if overlap_length < min_segment_length_m:
+                continue
 
-        length_a = profile_a[a_end] - profile_a[a_start]
-        length_b = profile_b[b_end] - profile_b[b_start]
+            # Estrai i punti sovrapposti da A e B.
+            sub_pts_a = track_a.points[a_start:a_end + 1]
+            
+            if overlap_length < min_segment_length_m:
+                continue
 
-        speeds_a = [p.speed * 3.6 for p in sub_pts_a if p.speed is not None]
-        avg_speed_a = float(np.mean(speeds_a)) if speeds_a else None
+            # Estrai i punti sovrapposti da A e B.
+            sub_pts_a = track_a.points[a_start:a_end + 1]
+            coords_a = [(p.latitude, p.longitude) for p in sub_pts_a]
+            # Usa le stesse coordinate di A anche per B: le due mappe
+            # evidenziano lo stesso poligrafo (vedi README_SEGMENTI_COMUNI.md),
+            # evitando polilinee diverse dovute a densita' di campionamento diversa.
+            # coords_b = coords_a
 
-        alts_a = [p.altitude for p in sub_pts_a if p.altitude is not None]
-        avg_alt_a = float(np.mean(alts_a)) if alts_a else None
+            sub_pts_b = track_b.points[b_start:b_end + 1]
+            coords_b = [(p.latitude, p.longitude) for p in sub_pts_b]
 
-        hrs_a = [p.heart_rate for p in sub_pts_a if p.heart_rate is not None]
-        avg_hr_a = float(np.mean(hrs_a)) if hrs_a else None
+            # Nessun ricampionamento: i punti originali vengono mantenuti e
+            # il confronto (bucket) interpola i campioni mancanti ai confini.
+            resampled_points_a = sub_pts_a
+            resampled_points_b = sub_pts_b
+            resampled_indices_a = list(range(a_start, a_end + 1))
+            resampled_indices_b = list(range(b_start, b_end + 1))
 
-        speeds_b = [p.speed * 3.6 for p in sub_pts_b if p.speed is not None]
-        avg_speed_b = float(np.mean(speeds_b)) if speeds_b else None
+            length_a = (
+                sum(
+                    haversine_distance(sub_pts_a[i - 1], sub_pts_a[i])
+                    for i in range(1, len(sub_pts_a))
+                )
+                if len(sub_pts_a) >= 2
+                else 0.0
+            )
+            length_b = (
+                sum(
+                    haversine_distance(sub_pts_b[i - 1], sub_pts_b[i])
+                    for i in range(1, len(sub_pts_b))
+                )
+                if len(sub_pts_b) >= 2
+                else 0.0
+            )
 
-        alts_b = [p.altitude for p in sub_pts_b if p.altitude is not None]
-        avg_alt_b = float(np.mean(alts_b)) if alts_b else None
+            # Lunghezza comune confrontabile: la più corta delle due, così
+            # l'ultimo bucket termina alla fine della traccia più corta e per
+            # la più lunga viene interpolato il punto "equivalente".
+            if length_a > 0 and length_b > 0:
+                effective_length = min(length_a, length_b)
+            else:
+                effective_length = overlap_length
 
-        hrs_b = [p.heart_rate for p in sub_pts_b if p.heart_rate is not None]
-        avg_hr_b = float(np.mean(hrs_b)) if hrs_b else None
+            # Calcola le metriche per la porzione sovrapposta
+            speeds_a = [
+                p.speed * 3.6 for p in resampled_points_a if p.speed is not None
+            ]
+            avg_speed_a = float(np.mean(speeds_a)) if speeds_a else None
 
-        slope_a = None
-        if len(alts_a) >= 2 and length_a > 0:
-            slope_a = ((alts_a[-1] - alts_a[0]) / length_a) * 100.0
+            alts_a = [
+                p.altitude for p in resampled_points_a if p.altitude is not None
+            ]
+            avg_alt_a = float(np.mean(alts_a)) if alts_a else None
 
-        slope_b = None
-        if len(alts_b) >= 2 and length_b > 0:
-            slope_b = ((alts_b[-1] - alts_b[0]) / length_b) * 100.0
+            hrs_a = [
+                p.heart_rate for p in resampled_points_a if p.heart_rate is not None
+            ]
+            avg_hr_a = float(np.mean(hrs_a)) if hrs_a else None
 
-        time_a_sec = None
-        if sub_pts_a[0].timestamp and sub_pts_a[-1].timestamp:
-            time_a_sec = (sub_pts_a[-1].timestamp - sub_pts_a[0].timestamp).total_seconds()
+            slope_a = None
+            if len(alts_a) >= 2 and effective_length > 0:
+                slope_a = ((alts_a[-1] - alts_a[0]) / effective_length) * 100.0
 
-        time_b_sec = None
-        if sub_pts_b[0].timestamp and sub_pts_b[-1].timestamp:
-            time_b_sec = (sub_pts_b[-1].timestamp - sub_pts_b[0].timestamp).total_seconds()
+            time_a_sec = None
+            if resampled_points_a[0].timestamp and resampled_points_a[-1].timestamp:
+                time_a_sec = (
+                    resampled_points_a[-1].timestamp - resampled_points_a[0].timestamp
+                ).total_seconds()
 
-        if avg_speed_a is None and time_a_sec and time_a_sec > 0 and length_a > 0:
-            avg_speed_a = (length_a / time_a_sec) * 3.6
+            if avg_speed_a is None and time_a_sec and time_a_sec > 0 and effective_length > 0:
+                avg_speed_a = (effective_length / time_a_sec) * 3.6
 
-        if avg_speed_b is None and time_b_sec and time_b_sec > 0 and length_b > 0:
-            avg_speed_b = (length_b / time_b_sec) * 3.6
+            speeds_b = [
+                p.speed * 3.6 for p in resampled_points_b if p.speed is not None
+            ]
+            avg_speed_b = float(np.mean(speeds_b)) if speeds_b else None
 
-        coords_a = [(p.latitude, p.longitude) for p in sub_pts_a]
-        coords_b = [(p.latitude, p.longitude) for p in sub_pts_b]
+            alts_b = [
+                p.altitude for p in resampled_points_b if p.altitude is not None
+            ]
+            avg_alt_b = float(np.mean(alts_b)) if alts_b else None
 
-        result.append({
-            "id": seg_idx,
-            "a_start_idx": a_start,
-            "a_end_idx": a_end,
-            "b_start_idx": b_start,
-            "b_end_idx": b_end,
-            "a_start_dist_m": profile_a[a_start],
-            "a_end_dist_m": profile_a[a_end],
-            "b_start_dist_m": profile_b[b_start],
-            "b_end_dist_m": profile_b[b_end],
-            "length_m": max(length_a, length_b),
-            "coords_a": coords_a,
-            "coords_b": coords_b,
-            "time_a_sec": time_a_sec,
-            "time_b_sec": time_b_sec,
-            "avg_speed_a": avg_speed_a,
-            "avg_speed_b": avg_speed_b,
-            "slope_a": slope_a,
-            "slope_b": slope_b,
-            "avg_alt_a": avg_alt_a,
-            "avg_alt_b": avg_alt_b,
-            "avg_hr_a": avg_hr_a,
-            "avg_hr_b": avg_hr_b,
-        })
+            hrs_b = [
+                p.heart_rate for p in resampled_points_b if p.heart_rate is not None
+            ]
+            avg_hr_b = float(np.mean(hrs_b)) if hrs_b else None
+
+            slope_b = None
+            if len(alts_b) >= 2 and effective_length > 0:
+                slope_b = ((alts_b[-1] - alts_b[0]) / effective_length) * 100.0
+
+            time_b_sec = None
+            if resampled_points_b[0].timestamp and resampled_points_b[-1].timestamp:
+                time_b_sec = (
+                    resampled_points_b[-1].timestamp - resampled_points_b[0].timestamp
+                ).total_seconds()
+
+            if avg_speed_b is None and time_b_sec and time_b_sec > 0 and effective_length > 0:
+                avg_speed_b = (effective_length / time_b_sec) * 3.6
+
+            result.append({
+                "id": seg_id,
+                "a_start_idx": a_start,
+                "a_end_idx": a_end,
+                "b_start_idx": b_start,
+                "b_end_idx": b_end,
+                "a_start_dist_m": profile_a[a_start],
+                "a_end_dist_m": profile_a[a_end],
+                "b_start_dist_m": profile_b[b_start],
+                "b_end_dist_m": profile_b[b_end],
+                "length_m": effective_length,
+                "coords_a": coords_a,
+                "coords_b": coords_b,
+                "time_a_sec": time_a_sec,
+                "time_b_sec": time_b_sec,
+                "avg_speed_a": avg_speed_a,
+                "avg_speed_b": avg_speed_b,
+                "slope_a": slope_a,
+                "slope_b": slope_b,
+                "avg_alt_a": avg_alt_a,
+                "avg_alt_b": avg_alt_b,
+                "avg_hr_a": avg_hr_a,
+                "avg_hr_b": avg_hr_b,
+                "resampled_points_a": resampled_points_a,
+                "resampled_points_b": resampled_points_b,
+                "resampled_indices_a": resampled_indices_a,
+                "resampled_indices_b": resampled_indices_b,
+            })
+            seg_id += 1
 
     return result
 

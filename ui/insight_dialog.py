@@ -116,6 +116,46 @@ class InsightDialog(QDialog):
         self.track_a = track_a
         self.track_b = track_b
 
+        # DEBUG: Stampa tutti i dati delle due tracce
+        print("\n" + "="*80)
+        print("DEBUG INSIGHT DIALOG - DATI TRACCE")
+        print("="*80)
+        print(f"Name A: {name_a}")
+        print(f"Name B: {name_b}")
+        print(f"\nTrack A: {track_a}")
+        print(f"Track B: {track_b}")
+        
+        if track_a:
+            print(f"\nTrack A - Numero punti: {len(track_a.points) if hasattr(track_a, 'points') else 'N/A'}")
+            if hasattr(track_a, 'points') and track_a.points:
+                print(f"Track A - Primo punto: {track_a.points[0]}")
+                print(f"Track A - Ultimo punto: {track_a.points[-1]}")
+                if hasattr(track_a.points[0], 'timestamp'):
+                    print(f"Track A - Timestamp inizio: {track_a.points[0].timestamp}")
+                    print(f"Track A - Timestamp fine: {track_a.points[-1].timestamp}")
+        
+        if track_b:
+            print(f"\nTrack B - Numero punti: {len(track_b.points) if hasattr(track_b, 'points') else 'N/A'}")
+            if hasattr(track_b, 'points') and track_b.points:
+                print(f"Track B - Primo punto: {track_b.points[0]}")
+                print(f"Track B - Ultimo punto: {track_b.points[-1]}")
+                if hasattr(track_b.points[0], 'timestamp'):
+                    print(f"Track B - Timestamp inizio: {track_b.points[0].timestamp}")
+                    print(f"Track B - Timestamp fine: {track_b.points[-1].timestamp}")
+        
+        print(f"\nNumero segmenti: {len(segments)}")
+        print("\nDettaglio segmenti:")
+        for idx, seg in enumerate(segments):
+            print(f"\n--- Segmento {idx + 1} ---")
+            for key, value in seg.items():
+                if key in ['coords_a', 'coords_b']:
+                    print(f"  {key}: [{len(value)} coordinate]")
+                elif key in ['resampled_points_a', 'resampled_points_b']:
+                    print(f"  {key}: [{len(value) if value else 0} punti ricampionati]")
+                else:
+                    print(f"  {key}: {value}")
+        print("="*80 + "\n")
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -487,12 +527,12 @@ class SegmentDetailDialog(QDialog):
             if b_idx < num_buckets:
                 if not buckets[b_idx]["a_points"]:
                     buckets[b_idx]["a_start_dist"] = dists_a[i]
-                    buckets[b_idx]["a_indices"].append(a_start + i)
+                    buckets[b_idx]["a_indices"].append(self._indices_a[i])
                 buckets[b_idx]["a_end_dist"] = dists_a[i]
                 buckets[b_idx]["a_points"].append(p)
-                buckets[b_idx]["a_indices"].append(a_start + i)
+                buckets[b_idx]["a_indices"].append(self._indices_a[i])
                 buckets[b_idx]["a_last_point"] = p
-                buckets[b_idx]["a_last_index"] = a_start + i
+                buckets[b_idx]["a_last_index"] = self._indices_a[i]
 
         for i, p in enumerate(points_b):
             if start_ts_b is None or getattr(p, "timestamp", None) is None:
@@ -502,12 +542,12 @@ class SegmentDetailDialog(QDialog):
             if b_idx < num_buckets:
                 if not buckets[b_idx]["b_points"]:
                     buckets[b_idx]["b_start_dist"] = dists_b[i]
-                    buckets[b_idx]["b_indices"].append(b_start + i)
+                    buckets[b_idx]["b_indices"].append(self._indices_b[i])
                 buckets[b_idx]["b_end_dist"] = dists_b[i]
                 buckets[b_idx]["b_points"].append(p)
-                buckets[b_idx]["b_indices"].append(b_start + i)
+                buckets[b_idx]["b_indices"].append(self._indices_b[i])
                 buckets[b_idx]["b_last_point"] = p
-                buckets[b_idx]["b_last_index"] = b_start + i
+                buckets[b_idx]["b_last_index"] = self._indices_b[i]
 
         self.time_table.setRowCount(num_buckets)
 
@@ -515,6 +555,26 @@ class SegmentDetailDialog(QDialog):
         self._time_rep_points_b = []
         self._time_rep_starts_a = []
         self._time_rep_starts_b = []
+
+        # DEBUG: Stampa tutti i dati dei bucket temporali
+        print("\n" + "="*80)
+        print("DEBUG INSIGHT DIALOG - BUCKET TEMPORALI")
+        print("="*80)
+        print(f"Numero bucket: {num_buckets}")
+        print(f"Bucket boundaries: {bucket_boundaries}")
+        print(f"End secs A: {end_secs_a:.2f}s")
+        print(f"End secs B: {end_secs_b:.2f}s")
+        print(f"\nDettaglio bucket:")
+        for b_idx, bucket in enumerate(buckets):
+            print(f"\n--- Bucket {b_idx + 1}/{num_buckets} ---")
+            print(f"  Tempo: {bucket['start_time']:.2f}s - {bucket['end_time']:.2f}s")
+            print(f"  Punti A: {len(bucket['a_points'])}")
+            print(f"  Indici A: {bucket['a_indices']}")
+            print(f"  Distanza A: {bucket['a_start_dist']:.2f}m - {bucket['a_end_dist']:.2f}m")
+            print(f"  Punti B: {len(bucket['b_points'])}")
+            print(f"  Indici B: {bucket['b_indices']}")
+            print(f"  Distanza B: {bucket['b_start_dist']:.2f}m - {bucket['b_end_dist']:.2f}m")
+        print("="*80 + "\n")
 
         # Distanza cumulativa (interpolata) raggiunta ESATTAMENTE alla fine di ogni
         # bucket temporale, così A e B sono confrontati sullo stesso istante
@@ -692,11 +752,32 @@ class SegmentDetailDialog(QDialog):
         b_start = self.segment.get("b_start_idx", 0)
         b_end = self.segment.get("b_end_idx", 0)
 
-        points_a = self.track_a.points[a_start:a_end + 1] if self.track_a else []
-        points_b = self.track_b.points[b_start:b_end + 1] if self.track_b else []
+        # Usa i punti del sotto-segmento (originali, senza ricampionamento).
+        # I confini dei bucket vengono interpolati in fase di calcolo dei tempi,
+        # quindi i campioni GPS restano quelli reali delle due tracce.
+        resampled_a = self.segment.get("resampled_points_a")
+        resampled_b = self.segment.get("resampled_points_b")
+        resampled_indices_a = self.segment.get("resampled_indices_a")
+        resampled_indices_b = self.segment.get("resampled_indices_b")
+
+        if resampled_a is not None:
+            points_a = resampled_a
+            indices_a = resampled_indices_a if resampled_indices_a else list(range(len(resampled_a)))
+        else:
+            points_a = self.track_a.points[a_start:a_end + 1] if self.track_a else []
+            indices_a = [a_start + i for i in range(len(points_a))]
+
+        if resampled_b is not None:
+            points_b = resampled_b
+            indices_b = resampled_indices_b if resampled_indices_b else list(range(len(resampled_b)))
+        else:
+            points_b = self.track_b.points[b_start:b_end + 1] if self.track_b else []
+            indices_b = [b_start + i for i in range(len(points_b))]
 
         self._points_a = points_a
         self._points_b = points_b
+        self._indices_a = indices_a
+        self._indices_b = indices_b
         self._a_start = a_start
         self._b_start = b_start
 
@@ -712,7 +793,15 @@ class SegmentDetailDialog(QDialog):
             dists_b.append(dists_b[-1] + haversine_distance(points_b[i-1], points_b[i]))
 
         bucket_size = 50.0
-        max_dist = max(dists_a[-1] if dists_a else 0.0, dists_b[-1] if dists_b else 0.0)
+        max_dist_a = dists_a[-1] if dists_a else 0.0
+        max_dist_b = dists_b[-1] if dists_b else 0.0
+        # Fine comune: si confrontano solo le distanze coperte da ENTRAMBE le
+        # tracce. Se una finisce prima dell'altra, per la più lunga viene
+        # interpolato il punto equivalente alla stessa distanza della più corta.
+        if max_dist_a > 0 and max_dist_b > 0:
+            max_dist = min(max_dist_a, max_dist_b)
+        else:
+            max_dist = max(max_dist_a, max_dist_b)
         num_buckets = int(max_dist / bucket_size) + 1 if max_dist > 0 else 0
 
         buckets = []
@@ -733,26 +822,30 @@ class SegmentDetailDialog(QDialog):
             })
 
         for i, d in enumerate(dists_a):
+            if d > max_dist:
+                continue
             b_idx = int(d / bucket_size)
             if b_idx < num_buckets:
                 if not buckets[b_idx]["a_points"]:
                     buckets[b_idx]["a_first_point"] = points_a[i]
-                    buckets[b_idx]["a_first_index"] = a_start + i
+                    buckets[b_idx]["a_first_index"] = self._indices_a[i]
                 buckets[b_idx]["a_points"].append(points_a[i])
-                buckets[b_idx]["a_indices"].append(a_start + i)
+                buckets[b_idx]["a_indices"].append(self._indices_a[i])
                 buckets[b_idx]["a_last_point"] = points_a[i]
-                buckets[b_idx]["a_last_index"] = a_start + i
+                buckets[b_idx]["a_last_index"] = self._indices_a[i]
 
         for i, d in enumerate(dists_b):
+            if d > max_dist:
+                continue
             b_idx = int(d / bucket_size)
             if b_idx < num_buckets:
                 if not buckets[b_idx]["b_points"]:
                     buckets[b_idx]["b_first_point"] = points_b[i]
-                    buckets[b_idx]["b_first_index"] = b_start + i
+                    buckets[b_idx]["b_first_index"] = self._indices_b[i]
                 buckets[b_idx]["b_points"].append(points_b[i])
-                buckets[b_idx]["b_indices"].append(b_start + i)
+                buckets[b_idx]["b_indices"].append(self._indices_b[i])
                 buckets[b_idx]["b_last_point"] = points_b[i]
-                buckets[b_idx]["b_last_index"] = b_start + i
+                buckets[b_idx]["b_last_index"] = self._indices_b[i]
 
         self.table.setRowCount(num_buckets)
 
@@ -764,25 +857,52 @@ class SegmentDetailDialog(QDialog):
         self._dists_a = dists_a
         self._dists_b = dists_b
 
+        # DEBUG: Stampa tutti i dati dei bucket di distanza
+        print("\n" + "="*80)
+        print("DEBUG INSIGHT DIALOG - BUCKET DISTANZA (50m)")
+        print("="*80)
+        print(f"Numero bucket: {num_buckets}")
+        print(f"Bucket size: 50.0m")
+        print(f"Max distanza A: {max_dist_a:.2f}m")
+        print(f"Max distanza B: {max_dist_b:.2f}m")
+        print(f"Max dist (fine comune): {max_dist:.2f}m")
+        print(f"\nDettaglio bucket:")
+        for b_idx, bucket in enumerate(buckets):
+            start_dist = b_idx * bucket_size
+            end_dist = (b_idx + 1) * bucket_size
+            if b_idx == num_buckets - 1:
+                end_dist = max_dist
+            print(f"\n--- Bucket {b_idx + 1}/{num_buckets} ---")
+            print(f"  Distanza: {start_dist:.0f}m - {end_dist:.0f}m")
+            print(f"  Punti A: {len(bucket['a_points'])}")
+            print(f"  Indici A: {bucket['a_indices']}")
+            print(f"  Primo punto A: {bucket['a_first_point']}")
+            print(f"  Ultimo punto A: {bucket['a_last_point']}")
+            print(f"  Punti B: {len(bucket['b_points'])}")
+            print(f"  Indici B: {bucket['b_indices']}")
+            print(f"  Primo punto B: {bucket['b_first_point']}")
+            print(f"  Ultimo punto B: {bucket['b_last_point']}")
+        print("="*80 + "\n")
+
         # Tempo (interpolato) per raggiungere ESATTAMENTE la fine di ogni bucket
         # (50 m, 100 m, ...), in modo che A e B siano confrontati sulla stessa
         # distanza indipendentemente dal campionamento GPS.
-        # Se il bucket è oltre la lunghezza del segmento, il confine viene "chiuso"
-        # alla distanza finale reale della traccia (ultimo bucket parziale).
-        max_a = dists_a[-1] if dists_a else 0.0
-        max_b = dists_b[-1] if dists_b else 0.0
+        # La fine comune `max_dist` viene usata per entrambe: se una traccia
+        # termina prima dell'altra, per la più lunga viene interpolato il tempo
+        # al punto equivalente (stessa distanza della traccia più corta).
+        common_end = max_dist
 
         cum_ts_a = [
-            None if k * bucket_size >= max_a
+            None if k * bucket_size >= common_end
             else self._interpolate_seconds_at_dist(
-                points_a, dists_a, min((k + 1) * bucket_size, max_a), start_ts_a
+                points_a, dists_a, min((k + 1) * bucket_size, common_end), start_ts_a
             )
             for k in range(num_buckets)
         ]
         cum_ts_b = [
-            None if k * bucket_size >= max_b
+            None if k * bucket_size >= common_end
             else self._interpolate_seconds_at_dist(
-                points_b, dists_b, min((k + 1) * bucket_size, max_b), start_ts_b
+                points_b, dists_b, min((k + 1) * bucket_size, common_end), start_ts_b
             )
             for k in range(num_buckets)
         ]
@@ -834,7 +954,7 @@ class SegmentDetailDialog(QDialog):
             if cum_ts_a[b_idx] is not None:
                 time_start = cum_ts_a[b_idx - 1] if b_idx > 0 and cum_ts_a[b_idx - 1] is not None else 0.0
                 time_in_bucket = cum_ts_a[b_idx] - time_start
-                dist_in_bucket = min((b_idx + 1) * bucket_size, max_a) - b_idx * bucket_size
+                dist_in_bucket = min((b_idx + 1) * bucket_size, common_end) - b_idx * bucket_size
                 if time_in_bucket > 0:
                     avg_speed_a = (dist_in_bucket / time_in_bucket) * 3.6
 
@@ -845,7 +965,7 @@ class SegmentDetailDialog(QDialog):
             if cum_ts_b[b_idx] is not None:
                 time_start = cum_ts_b[b_idx - 1] if b_idx > 0 and cum_ts_b[b_idx - 1] is not None else 0.0
                 time_in_bucket = cum_ts_b[b_idx] - time_start
-                dist_in_bucket = min((b_idx + 1) * bucket_size, max_b) - b_idx * bucket_size
+                dist_in_bucket = min((b_idx + 1) * bucket_size, common_end) - b_idx * bucket_size
                 if time_in_bucket > 0:
                     avg_speed_b = (dist_in_bucket / time_in_bucket) * 3.6
 

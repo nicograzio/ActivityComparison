@@ -624,8 +624,9 @@ class MainWindow(QMainWindow):
             self._clear_common_segment_highlights()
             return
 
-        self.left_panel.map.draw_highlighted_segments(segments)
-        self.right_panel.map.draw_highlighted_segments(segments)
+        # Draw only the corresponding track's coordinates on each map
+        self.left_panel.map.draw_highlighted_segments(segments, coord_key="coords_a")
+        self.right_panel.map.draw_highlighted_segments(segments, coord_key="coords_b")
         self.controls_panel.set_segments_insight_enabled(True)
 
     def _on_show_segments_insight(self):
@@ -647,6 +648,22 @@ class MainWindow(QMainWindow):
 
         left_visible = self.left_panel._visible_track()
         right_visible = self.right_panel._visible_track()
+        
+        # DEBUG: Stampa dati prima di aprire il dialog
+        print("\n" + "="*80)
+        print("DEBUG MAIN WINDOW - APERTURA INSIGHT DIALOG")
+        print("="*80)
+        print(f"Segmenti comuni: {len(self._common_segments)}")
+        print(f"Name A: {self.left_panel.title}")
+        print(f"Name B: {self.right_panel.title}")
+        print(f"Track A: {left_visible}")
+        print(f"Track B: {right_visible}")
+        if left_visible and hasattr(left_visible, 'points'):
+            print(f"Track A punti: {len(left_visible.points)}")
+        if right_visible and hasattr(right_visible, 'points'):
+            print(f"Track B punti: {len(right_visible.points)}")
+        print("="*80 + "\n")
+        
         dialog = InsightDialog(
             self._common_segments,
             name_a=self.left_panel.title,
@@ -763,8 +780,12 @@ class MainWindow(QMainWindow):
         for panel in (self.left_panel, self.right_panel):
             if panel.map:
                 panel.map.draw_highlighted_segments([
-                    {"coords_a": occ.get("coords", []), "coords_b": []}
-                    for occ in self._strava_occurrences
+                    {
+                        "coords_a": occ.get("coords", []),
+                        "coords_b": [],
+                        "id": i + 1
+                    }
+                    for i, occ in enumerate(self._strava_occurrences)
                 ])
 
     def _clear_strava_segment_highlights(self):
