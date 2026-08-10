@@ -12,6 +12,7 @@ Consumes:
     - ``ui.graph_panel.GraphPanel``
 """
 
+import os
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter, QMessageBox
 
@@ -19,7 +20,9 @@ from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel, ScaleMode
 from ui.graph_panel import GraphPanel
 from ui.insight_dialog import InsightDialog
+from ui.strava_segments_dialog import StravaSegmentsDialog
 from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series, find_common_segments
+from core.strava_analyzer import load_strava_segments, find_strava_segments_in_track
 
 
 class MainWindow(QMainWindow):
@@ -62,6 +65,8 @@ class MainWindow(QMainWindow):
         self._maps_ready_count = 0
         self._common_segments = []
         self._highlight_enabled = False
+        self._strava_segments = []
+        self._strava_occurrences = []
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -135,6 +140,7 @@ class MainWindow(QMainWindow):
         self.controls_panel.sync_scales_toggled.connect(self._on_sync_scales_toggled)
         self.controls_panel.highlight_common_segments_toggled.connect(self._on_highlight_common_segments_toggled)
         self.controls_panel.show_segments_insight_requested.connect(self._on_show_segments_insight)
+        self.controls_panel.show_strava_segments_requested.connect(self._on_show_strava_segments)
         self.controls_panel.invert_activities_requested.connect(self._invert_activities)
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
@@ -651,7 +657,123 @@ class MainWindow(QMainWindow):
         )
         dialog.segment_point_selected.connect(self._on_segment_point_selected)
         dialog.exec()
- 
+
+    def _on_show_strava_segments(self):
+        """Open the Strava segments selection dialog.
+
+        Called by:
+            - ``ComparisonControlsPanel.show_strava_segments_requested``
+        """
+        if not self._strava_segments:
+            folder_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "Strava_Segments"
+            )
+            self._strava_segments = load_strava_segments(folder_path)
+
+        if not self._strava_segments:
+            QMessageBox.information(
+                self,
+                "Segmenti Strava",
+                "Nessun segmento Strava disponibile. Inserisci i file GPX nella cartella Strava_Segments.",
+            )
+            return
+
+        left_track = self.left_panel.track
+        right_track = self.right_panel.track
+
+        if not left_track and not right_track:
+            QMessageBox.information(
+                self,
+                "Segmenti Strava",
+                "Carica almeno una traccia per cercare i segmenti Strava.",
+            )
+            return
+
+        self._strava_occurrences = []
+        if left_track:
+            self._strava_occurrences.extend(
+                find_strava_segments_in_track(self._strava_segments, left_track)
+            )
+        if right_track:
+            self._strava_occurrences.extend(
+                find_strava_segments_in_track(self._strava_segments, right_track)
+            )
+
+        if not self._strava_occurrences:
+            QMessageBox.information(
+                self,
+                "Segmenti Strava",
+                "Nessun segmento Strava trovato nelle tracce caricate.",
+            )
+            return
+
+        # Highlight found segments on maps
+        self._highlight_strava_segments_on_maps()
+
+        dialog = StravaSegmentsDialog(self._strava_occurrences, parent=self)
+        dialog.comparison_requested.connect(self._on_strava_comparison_requested)
+        dialog.exec()
+
+    def _on_strava_comparison_requested(self, occurrences: list[dict]):
+        """Open detailed comparison dialog for two Strava segment occurrences.
+
+        Called by:
+            - ``StravaSegmentsDialog.comparison_requested``
+        """
+        if len(occurrences) != 2:
+            return
+
+        occ1, occ2 = occurrences
+
+        # Create a segment dict compatible with InsightDialog
+        segment = {
+            "id": occ1["segment_name"],
+            "a_start_idx": occ1["start_idx"],
+            "a_end_idx": occ1["end_idx"],
+            "b_start_idx": occ2["start_idx"],
+            "b_end_idx": occ2["end_idx"],
+            "a_start_dist_m": occ1["start_dist_m"],
+            "a_end_dist_m": occ1["end_dist_m"],
+            "b_start_dist_m": occ2["start_dist_m"],
+            "b_end_dist_m": occ2["end_dist_m"],
+            "length_m": max(occ1["length_m"], occ2["length_m"]),
+            "coords_a": occ1.get("coords", []),
+            "coords_b": occ2.get("coords", []),
+            "time_a_sec": occ1.get("time_sec"),
+            "time_b_sec": occ2.get("time_sec"),
+            "avg_speed_a": occ1.get("avg_speed"),
+            "avg_speed_b": occ2.get("avg_speed"),
+            "slope_a": occ1.get("slope"),
+            "slope_b": occ2.get("slope"),
+        }
+
+        dialog = InsightDialog(
+            [segment],
+            name_a=occ1["track_name"],
+            name_b=occ2["track_name"],
+            track_a=occ1["track"],
+            track_b=occ2["track"],
+            parent=self,
+        )
+        dialog.segment_point_selected.connect(self._on_segment_point_selected)
+        dialog.exec()
+
+    def _highlight_strava_segments_on_maps(self):
+        """Draw found Strava segments on both maps."""
+        for panel in (self.left_panel, self.right_panel):
+            if panel.map:
+                panel.map.draw_highlighted_segments([
+                    {"coords_a": occ.get("coords", []), "coords_b": []}
+                    for occ in self._strava_occurrences
+                ])
+
+    def _clear_strava_segment_highlights(self):
+        """Remove Strava segment highlights from both maps."""
+        self._strava_occurrences = []
+        for panel in (self.left_panel, self.right_panel):
+            if panel.map:
+                panel.map.clear_highlighted_segments()
+
     def _apply_fullscreen_mode(self, mode):
         """Show one side in fullscreen and hide the other."""
         self._fullscreen_mode = mode
@@ -688,11 +810,13 @@ class MainWindow(QMainWindow):
         right_loaded = self.right_panel.track is not None
         self.controls_panel.set_sync_controls_enabled(both_loaded)
         self.controls_panel.set_fullscreen_buttons_enabled(left_loaded, right_loaded)
+        self.controls_panel.set_strava_segments_enabled(left_loaded or right_loaded)
         if self._fullscreen_mode == "left" and not left_loaded:
             self._apply_fullscreen_mode(None)
         if self._fullscreen_mode == "right" and not right_loaded:
             self._apply_fullscreen_mode(None)
         self._clear_common_segment_highlights()
+        self._clear_strava_segment_highlights()
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.

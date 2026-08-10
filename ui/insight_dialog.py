@@ -76,6 +76,20 @@ def _format_pace(avg_speed_kmh):
     return f"{minutes}'{seconds:02d}\""
 
 
+def _get_track_duration(track):
+    """Calcola la durata in secondi di una traccia (dal primo all'ultimo punto)."""
+    if not track or not hasattr(track, 'points') or not track.points:
+        return None
+    first_ts = getattr(track.points[0], 'timestamp', None)
+    last_ts = getattr(track.points[-1], 'timestamp', None)
+    if first_ts and last_ts:
+        try:
+            return (last_ts - first_ts).total_seconds()
+        except Exception:
+            return None
+    return None
+
+
 class InsightDialog(QDialog):
     """Dialog showing detailed comparison of common segments between two tracks."""
     segment_point_selected = pyqtSignal(str, int)
@@ -287,11 +301,18 @@ class SegmentDetailDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        duration_a = _get_track_duration(track_a)
+        duration_b = _get_track_duration(track_b)
+
         summary_text = (
             f"<b>Segmento {segment.get('id', '?')}</b> | "
             f"{name_a} vs {name_b} | "
             f"Distanza: {segment.get('length_m', 0):.0f} m"
         )
+        if duration_a is not None or duration_b is not None:
+            dur_a_str = _format_duration(duration_a) if duration_a is not None else "N/A"
+            dur_b_str = _format_duration(duration_b) if duration_b is not None else "N/A"
+            summary_text += f" | Durata {name_a}: {dur_a_str} | Durata {name_b}: {dur_b_str}"
         summary_label = QLabel(summary_text)
         summary_label.setWordWrap(True)
         layout.addWidget(summary_label)
@@ -387,15 +408,49 @@ class SegmentDetailDialog(QDialog):
         start_ts_b = getattr(points_b[0], "timestamp", None) if points_b else None
 
         bucket_seconds = 30.0
-        max_time = 0.0
-        if points_a and start_ts_a is not None:
-            max_time = max(max_time, (points_a[-1].timestamp - start_ts_a).total_seconds())
-        if points_b and start_ts_b is not None:
-            max_time = max(max_time, (points_b[-1].timestamp - start_ts_b).total_seconds())
+        
+        # Calcola i tempi di fine effettivi di entrambe le tracce
+        end_secs_a = (points_a[-1].timestamp - start_ts_a).total_seconds() if points_a and start_ts_a else 0.0
+        end_secs_b = (points_b[-1].timestamp - start_ts_b).total_seconds() if points_b and start_ts_b else 0.0
+        
+        min_end = min(end_secs_a, end_secs_b)
+        max_end = max(end_secs_a, end_secs_b)
 
-        num_buckets = int(max_time / bucket_seconds) + 1 if max_time > 0 else 0
+        # Costruisci i confini dei bucket:
+        # - 30s regolari fino alla fine della traccia più lunga
+        # - se la traccia più corta finisce a metà bucket, inserisci un confine aggiuntivo
+        # - l'ultimo bucket finisce esattamente all'orario di fine della traccia più lunga
+        bucket_boundaries = [0.0]
+        t = bucket_seconds
+        while t <= max_end:
+            bucket_boundaries.append(t)
+            t += bucket_seconds
+        
+        # Se min_end non è su un confine regolare, inseriscilo nella posizione corretta
+        if min_end not in bucket_boundaries and min_end < max_end:
+            inserted = False
+            for i, b in enumerate(bucket_boundaries):
+                if b > min_end:
+                    bucket_boundaries.insert(i, min_end)
+                    inserted = True
+                    break
+            # Se non è stato inserito (tutti i confini sono <= min_end), aggiungilo alla fine
+            if not inserted:
+                bucket_boundaries.append(min_end)
+        
+        # Rimuovi confini oltre max_end (con tolleranza per floating point)
+        bucket_boundaries = [b for b in bucket_boundaries if b <= max_end + 0.001]
+        
+        # Assicurati che max_end sia l'ultimo confine
+        if bucket_boundaries[-1] < max_end - 0.001:
+            bucket_boundaries.append(max_end)
+        
+        # Rimuovi duplicati e ordina
+        bucket_boundaries = sorted(list(set(bucket_boundaries)))
+
+        num_buckets = len(bucket_boundaries) - 1
         buckets = []
-        for _ in range(num_buckets):
+        for b_idx in range(num_buckets):
             buckets.append({
                 "a_points": [],
                 "b_points": [],
@@ -409,16 +464,26 @@ class SegmentDetailDialog(QDialog):
                 "b_last_point": None,
                 "a_last_index": None,
                 "b_last_index": None,
+                "start_time": bucket_boundaries[b_idx],
+                "end_time": bucket_boundaries[b_idx + 1],
             })
 
         dists_a = self._dists_a if hasattr(self, "_dists_a") else [0.0]
         dists_b = self._dists_b if hasattr(self, "_dists_b") else [0.0]
 
+        def find_bucket_idx(rel_time):
+            """Trova l'indice del bucket per un dato tempo relativo."""
+            for i in range(num_buckets):
+                if bucket_boundaries[i] <= rel_time < bucket_boundaries[i + 1]:
+                    return i
+            # Se è esattamente al confine finale, mettilo nell'ultimo bucket
+            return num_buckets - 1
+
         for i, p in enumerate(points_a):
             if start_ts_a is None or getattr(p, "timestamp", None) is None:
                 continue
             rel = (p.timestamp - start_ts_a).total_seconds()
-            b_idx = int(rel / bucket_seconds)
+            b_idx = find_bucket_idx(rel)
             if b_idx < num_buckets:
                 if not buckets[b_idx]["a_points"]:
                     buckets[b_idx]["a_start_dist"] = dists_a[i]
@@ -433,7 +498,7 @@ class SegmentDetailDialog(QDialog):
             if start_ts_b is None or getattr(p, "timestamp", None) is None:
                 continue
             rel = (p.timestamp - start_ts_b).total_seconds()
-            b_idx = int(rel / bucket_seconds)
+            b_idx = find_bucket_idx(rel)
             if b_idx < num_buckets:
                 if not buckets[b_idx]["b_points"]:
                     buckets[b_idx]["b_start_dist"] = dists_b[i]
@@ -452,31 +517,31 @@ class SegmentDetailDialog(QDialog):
         self._time_rep_starts_b = []
 
         # Distanza cumulativa (interpolata) raggiunta ESATTAMENTE alla fine di ogni
-        # bucket temporale (30 s, 60 s, ...), così A e B sono confrontati sullo stesso
-        # istante indipendentemente dal campionamento GPS.
-        # Se il bucket è oltre la durata del segmento, il confine viene "chiuso"
-        # al tempo finale reale della traccia (ultimo bucket parziale).
+        # bucket temporale, così A e B sono confrontati sullo stesso istante
+        # indipendentemente dal campionamento GPS.
+        # I bucket hanno durata variabile: 30s regolari, ma l'ultimo bucket di ogni
+        # traccia finisce esattamente al tempo di fine della traccia stessa.
         max_secs_a = (points_a[-1].timestamp - start_ts_a).total_seconds() if points_a and start_ts_a else 0.0
         max_secs_b = (points_b[-1].timestamp - start_ts_b).total_seconds() if points_b and start_ts_b else 0.0
 
         cum_dists_a = [
-            None if k * bucket_seconds >= max_secs_a
+            None if bucket_boundaries[b_idx] >= max_secs_a
             else self._interpolate_dist_at_seconds(
-                points_a, dists_a, min((k + 1) * bucket_seconds, max_secs_a), start_ts_a
+                points_a, dists_a, min(bucket_boundaries[b_idx + 1], max_secs_a), start_ts_a
             )
-            for k in range(num_buckets)
+            for b_idx in range(num_buckets)
         ]
         cum_dists_b = [
-            None if k * bucket_seconds >= max_secs_b
+            None if bucket_boundaries[b_idx] >= max_secs_b
             else self._interpolate_dist_at_seconds(
-                points_b, dists_b, min((k + 1) * bucket_seconds, max_secs_b), start_ts_b
+                points_b, dists_b, min(bucket_boundaries[b_idx + 1], max_secs_b), start_ts_b
             )
-            for k in range(num_buckets)
+            for b_idx in range(num_buckets)
         ]
 
         for b_idx, bucket in enumerate(buckets):
-            start_t = b_idx * bucket_seconds
-            end_t = (b_idx + 1) * bucket_seconds
+            start_t = bucket["start_time"]
+            end_t = bucket["end_time"]
             item_num = QTableWidgetItem(f"{_format_duration(start_t)} – {_format_duration(end_t)}")
             item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_num.setToolTip("Mostra il bucket su entrambe le attività")
@@ -540,24 +605,25 @@ class SegmentDetailDialog(QDialog):
             item_dc.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 6, item_dc)
 
-            speeds_a = []
-            for idx in bucket["a_indices"]:
-                if idx > a_start and idx - a_start - 1 < len(points_a):
-                    spd = calculate_point_speed(points_a[idx - a_start - 1], points_a[idx - a_start])
-                    if spd is not None:
-                        speeds_a.append(spd)
-            avg_speed_a = sum(speeds_a) / len(speeds_a) if speeds_a else None
+            # Velocità media = distanza percorsa nel bucket / durata effettiva del bucket
+            avg_speed_a = None
+            if covered_a is not None:
+                bucket_end_time = min(bucket_boundaries[b_idx + 1], max_secs_a)
+                bucket_duration = bucket_end_time - bucket_boundaries[b_idx]
+                if bucket_duration > 0:
+                    avg_speed_a = (covered_a / bucket_duration) * 3.6
+
             item_sa = QTableWidgetItem(f"{avg_speed_a:.1f}" if avg_speed_a is not None else "N/A")
             item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 7, item_sa)
 
-            speeds_b = []
-            for idx in bucket["b_indices"]:
-                if idx > b_start and idx - b_start - 1 < len(points_b):
-                    spd = calculate_point_speed(points_b[idx - b_start - 1], points_b[idx - b_start])
-                    if spd is not None:
-                        speeds_b.append(spd)
-            avg_speed_b = sum(speeds_b) / len(speeds_b) if speeds_b else None
+            avg_speed_b = None
+            if covered_b is not None:
+                bucket_end_time = min(bucket_boundaries[b_idx + 1], max_secs_b)
+                bucket_duration = bucket_end_time - bucket_boundaries[b_idx]
+                if bucket_duration > 0:
+                    avg_speed_b = (covered_b / bucket_duration) * 3.6
+
             item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
             item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.time_table.setItem(b_idx, 8, item_sb)
@@ -724,6 +790,8 @@ class SegmentDetailDialog(QDialog):
         for b_idx, bucket in enumerate(buckets):
             start_dist = b_idx * bucket_size
             end_dist = (b_idx + 1) * bucket_size
+            if b_idx == num_buckets - 1:
+                end_dist = max_dist
             item_num = QTableWidgetItem(f"{start_dist:.0f}–{end_dist:.0f} m")
             item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_num.setToolTip("Mostra il bucket su entrambe le attività")
@@ -761,23 +829,26 @@ class SegmentDetailDialog(QDialog):
             item_tb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(b_idx, 2, item_tb)
 
-            speeds_a = []
-            for idx in bucket["a_indices"]:
-                if idx > a_start and idx - a_start - 1 < len(points_a):
-                    spd = calculate_point_speed(points_a[idx - a_start - 1], points_a[idx - a_start])
-                    if spd is not None:
-                        speeds_a.append(spd)
-            avg_speed_a = sum(speeds_a) / len(speeds_a) if speeds_a else None
+            # Velocità media = distanza del bucket / tempo impiegato per percorrerlo
+            avg_speed_a = None
+            if cum_ts_a[b_idx] is not None:
+                time_start = cum_ts_a[b_idx - 1] if b_idx > 0 and cum_ts_a[b_idx - 1] is not None else 0.0
+                time_in_bucket = cum_ts_a[b_idx] - time_start
+                dist_in_bucket = min((b_idx + 1) * bucket_size, max_a) - b_idx * bucket_size
+                if time_in_bucket > 0:
+                    avg_speed_a = (dist_in_bucket / time_in_bucket) * 3.6
+
             item_sa = QTableWidgetItem(f"{avg_speed_a:.1f}" if avg_speed_a is not None else "N/A")
             item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            speeds_b = []
-            for idx in bucket["b_indices"]:
-                if idx > b_start and idx - b_start - 1 < len(points_b):
-                    spd = calculate_point_speed(points_b[idx - b_start - 1], points_b[idx - b_start])
-                    if spd is not None:
-                        speeds_b.append(spd)
-            avg_speed_b = sum(speeds_b) / len(speeds_b) if speeds_b else None
+            avg_speed_b = None
+            if cum_ts_b[b_idx] is not None:
+                time_start = cum_ts_b[b_idx - 1] if b_idx > 0 and cum_ts_b[b_idx - 1] is not None else 0.0
+                time_in_bucket = cum_ts_b[b_idx] - time_start
+                dist_in_bucket = min((b_idx + 1) * bucket_size, max_b) - b_idx * bucket_size
+                if time_in_bucket > 0:
+                    avg_speed_b = (dist_in_bucket / time_in_bucket) * 3.6
+
             item_sb = QTableWidgetItem(f"{avg_speed_b:.1f}" if avg_speed_b is not None else "N/A")
             item_sb.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 

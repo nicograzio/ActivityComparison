@@ -16,9 +16,12 @@ Signals emitted:
     - right_fullscreen_toggled
     - highlight_common_segments_toggled
     - show_segments_insight_requested
+    - show_strava_segments_requested
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
+import os
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy
 
 
@@ -34,6 +37,7 @@ class ComparisonControlsPanel(QWidget):
     right_fullscreen_toggled = pyqtSignal(bool)
     highlight_common_segments_toggled = pyqtSignal(bool)
     show_segments_insight_requested = pyqtSignal()
+    show_strava_segments_requested = pyqtSignal()
 
     def __init__(self):
         """Create the control column and wire button signals.
@@ -88,6 +92,24 @@ class ComparisonControlsPanel(QWidget):
         )
         self.show_segments_insight_button.clicked.connect(self.show_segments_insight_requested.emit)
         layout.addWidget(self.show_segments_insight_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        strava_icon_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons", "strava.png"
+        )
+        self.show_strava_segments_button = QPushButton()
+        self.show_strava_segments_button.setObjectName("Segmenti Strava")
+        self.show_strava_segments_button.setProperty("class", "comparisonControlButton")
+        self.show_strava_segments_button.setToolTip("Trova segmenti Strava e confrontali")
+        self.show_strava_segments_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_strava_segments_button.setFixedSize(42, 42)
+        strava_icon = QIcon(strava_icon_path)
+        if not strava_icon.isNull():
+            self.show_strava_segments_button.setIcon(strava_icon)
+            self.show_strava_segments_button.setIconSize(QSize(32, 32))
+        else:
+            self.show_strava_segments_button.setText("🏃")
+        self.show_strava_segments_button.clicked.connect(self.show_strava_segments_requested.emit)
+        layout.addWidget(self.show_strava_segments_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.left_fullscreen_button = self._build_button(
             "➡️",
@@ -191,6 +213,16 @@ class ComparisonControlsPanel(QWidget):
             enabled and self._sync_controls_enabled and self._fullscreen_mode is None
         )
 
+    def set_strava_segments_enabled(self, enabled: bool):
+        """Enable or disable the Strava segments button.
+
+        Called by:
+            ``MainWindow`` when at least one track is loaded.
+        """
+        self.show_strava_segments_button.setEnabled(
+            enabled and self._fullscreen_mode is None
+        )
+
     def set_highlight_common_segments_checked(self, checked: bool):
         """Programmatically check or uncheck the highlight toggle.
 
@@ -218,6 +250,7 @@ class ComparisonControlsPanel(QWidget):
         self.sync_scales_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.highlight_common_segments_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.show_segments_insight_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.show_strava_segments_button.setEnabled(not is_fullscreen)
         self.invert_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.center_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
 

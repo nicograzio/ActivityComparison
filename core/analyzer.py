@@ -5,9 +5,12 @@ dei profili per grafici e mappe, sfruttando NumPy per le prestazioni.
 """
 
 import math
+import os
 from datetime import timedelta
+from pathlib import Path
 from typing import List, Tuple, Optional, Any
 import numpy as np
+import gpxpy
 
 from core.track import Track, TrackPoint
 
