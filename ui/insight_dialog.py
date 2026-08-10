@@ -147,8 +147,8 @@ class InsightDialog(QDialog):
             "Δ Vel (km/h)",
             "Δ FC (bpm)",
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        # Abilita il ridimensionamento manuale delle colonne
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(0, 40)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -331,8 +331,8 @@ class SegmentDetailDialog(QDialog):
             "Vel B (km/h)",
             "Δ Vel (km/h)",
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        # Abilita il ridimensionamento manuale delle colonne
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(0, 80)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -359,8 +359,8 @@ class SegmentDetailDialog(QDialog):
             "Vel B (km/h)",
             "Δ Vel (km/h)",
         ])
-        self.time_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.time_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        # Abilita il ridimensionamento manuale delle colonne
+        self.time_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.time_table.setColumnWidth(0, 80)
         self.time_table.verticalHeader().setVisible(False)
         self.time_table.setAlternatingRowColors(True)
