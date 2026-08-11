@@ -102,6 +102,7 @@ class TrackPanel(QWidget):
     visible_track_changed = pyqtSignal(object)
     manual_limits_changed = pyqtSignal(float, float)
     scale_mode_changed = pyqtSignal(object)
+    other_panel: "TrackPanel | None"
 
     def __init__(self, title):
         """Create the activity panel.
