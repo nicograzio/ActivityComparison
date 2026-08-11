@@ -178,26 +178,32 @@ class TrackPanel(QWidget):
         self.summary_layout.setSpacing(10)
         
         for key, label in self.icon_labels.items():
-            self.summary_layout.addWidget(label)
             if key == "info":
-                self.summary_layout.insertStretch(self.summary_layout.count() - 1, 1)
+                continue
+            self.summary_layout.addWidget(label)
             label.hide() # Hidden until track loaded
             label.installEventFilter(self)
             label.setMouseTracking(True)
         
-        info_label = self.icon_labels["info"]
-        pixmap = QPixmap("assets/icons/info.png")
-        if not pixmap.isNull():
-            info_label.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        else:
-            info_label.setText("ℹ")
-        info_label.mousePressEvent = lambda event: self._show_track_info()
-        info_label.setToolTip("Visualizza informazioni dettagliate dell'attività")
-        info_label.show()
+        self.info_button = self.icon_labels["info"]
+        self.info_button.hide()
+        self.info_button.installEventFilter(self)
+        self.info_button.setMouseTracking(True)
 
         top_toolbar.addWidget(self.summary_container)
         top_toolbar.addStretch()
+        top_toolbar.addWidget(self.info_button)
         layout.addLayout(top_toolbar)
+
+        pixmap = QPixmap("assets/icons/info.png")
+        if not pixmap.isNull():
+            self.info_button.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            self.info_button.setText("ℹ")
+        # (Rimosso blocco precedente che applicava l'effetto colore qui, ora gestito in show_summary)
+        self.info_button.mousePressEvent = lambda event: self._show_track_info()
+        self.info_button.setToolTip("Visualizza informazioni dettagliate dell'attività")
+
 
         # Second toolbar: Scale controls
         scale_toolbar = QHBoxLayout()
@@ -697,6 +703,15 @@ class TrackPanel(QWidget):
         weather_available = summary["weather"]
         weather_lines = self._weather_lines()
         self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
+
+        # Info
+        # Determina il colore basato sullo sfondo
+        bg_color = self.palette().color(self.backgroundRole())
+        is_dark_bg = bg_color.lightness() < 128
+        info_color = QColor("white" if is_dark_bg else "black")
+        
+        self._set_icon("info", "info", True, "Informazioni", [], color=info_color)
+        self.info_button.mousePressEvent = lambda event: self._show_track_info()
 
     def _weather_lines(self):
         """Costruisce le righe del tooltip meteo mostrando inizio e fine attività."""
