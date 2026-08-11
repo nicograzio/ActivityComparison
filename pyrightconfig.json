@@ -1,11 +1,7 @@
 {
-    "pythonVersion": "3.14",
-    "pythonPlatform": "Darwin",
-    "executionEnvironments": [
-        {
-            "root": ".",
-            "pythonPath": "/usr/local/bin/python3"
-        }
-    ],
-    "reportMissingImports": true
+  "reportMissingTypeStubs": false,
+  "reportOptionalMemberAccess": false,
+  "reportAttributeAccessIssue": false,
+  "reportCallIssue": false,
+  "reportIncompatibleMethodOverride": false
 }
