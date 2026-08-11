@@ -43,6 +43,11 @@ class TrackPoint:
     depth: Optional[float] = None
     power: Optional[float] = None
     course: Optional[float] = None
+    distance: Optional[float] = None
+    calories: Optional[float] = None
+    grade: Optional[float] = None
+    gps_accuracy: Optional[float] = None
+    extra_data: Optional[Dict[str, Any]] = None
 
 
 class Track:
@@ -64,6 +69,14 @@ class Track:
         self.weather_start: Optional[WeatherInfo] = None
         self.weather_end: Optional[WeatherInfo] = None
 
+        # Metadati extra del file FIT / GPX
+        self.sessions: List[Dict[str, Any]] = []
+        self.laps: List[Dict[str, Any]] = []
+        self.device_infos: List[Dict[str, Any]] = []
+        self.events: List[Dict[str, Any]] = []
+        self.file_id: Optional[Dict[str, Any]] = None
+        self.fit_metadata: Dict[str, List[Dict[str, Any]]] = {}
+
         # Cache lazy per le rappresentazioni NumPy
         self._np_latitudes: Optional[np.ndarray] = None
         self._np_longitudes: Optional[np.ndarray] = None
@@ -76,6 +89,9 @@ class Track:
         self._np_depths: Optional[np.ndarray] = None
         self._np_powers: Optional[np.ndarray] = None
         self._np_courses: Optional[np.ndarray] = None
+        self._np_distances: Optional[np.ndarray] = None
+        self._np_calories: Optional[np.ndarray] = None
+        self._np_grades: Optional[np.ndarray] = None
 
     def add_point(self, point: TrackPoint) -> None:
         """Aggiunge un punto alla traccia e invalida la cache.
@@ -99,6 +115,9 @@ class Track:
         self._np_depths = None
         self._np_powers = None
         self._np_courses = None
+        self._np_distances = None
+        self._np_calories = None
+        self._np_grades = None
 
     @property
     def latitudes(self) -> np.ndarray:
@@ -203,3 +222,33 @@ class Track:
                 dtype=np.float64
             )
         return self._np_courses
+
+    @property
+    def distances(self) -> np.ndarray:
+        """Array NumPy delle distanze (float64, np.nan per valori assenti)."""
+        if self._np_distances is None:
+            self._np_distances = np.array(
+                [p.distance if p.distance is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_distances
+
+    @property
+    def calories(self) -> np.ndarray:
+        """Array NumPy delle calorie (float64, np.nan per valori assenti)."""
+        if self._np_calories is None:
+            self._np_calories = np.array(
+                [p.calories if p.calories is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_calories
+
+    @property
+    def grades(self) -> np.ndarray:
+        """Array NumPy delle pendenze/grade (float64, np.nan per valori assenti)."""
+        if self._np_grades is None:
+            self._np_grades = np.array(
+                [p.grade if p.grade is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_grades
