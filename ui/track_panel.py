@@ -152,7 +152,8 @@ class TrackPanel(QWidget):
             "heart_rate": QLabel(),
             "elevation": QLabel(),
             "speed": QLabel(),
-            "weather": QLabel()
+            "weather": QLabel(),
+            "info": QLabel()
         }
 
         self._init_ui()
@@ -176,11 +177,23 @@ class TrackPanel(QWidget):
         self.summary_layout.setContentsMargins(5, 0, 5, 0)
         self.summary_layout.setSpacing(10)
         
-        for label in self.icon_labels.values():
+        for key, label in self.icon_labels.items():
             self.summary_layout.addWidget(label)
+            if key == "info":
+                self.summary_layout.insertStretch(self.summary_layout.count() - 1, 1)
             label.hide() # Hidden until track loaded
             label.installEventFilter(self)
             label.setMouseTracking(True)
+        
+        info_label = self.icon_labels["info"]
+        pixmap = QPixmap("assets/icons/info.png")
+        if not pixmap.isNull():
+            info_label.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            info_label.setText("ℹ")
+        info_label.mousePressEvent = lambda event: self._show_track_info()
+        info_label.setToolTip("Visualizza informazioni dettagliate dell'attività")
+        info_label.show()
 
         top_toolbar.addWidget(self.summary_container)
         top_toolbar.addStretch()
@@ -749,6 +762,44 @@ class TrackPanel(QWidget):
         if requested == 0:
             self.weather_active = False
             self._update_weather_icon()
+
+    def _show_track_info(self):
+        """Show a dialog with detailed track information."""
+        if not self.track:
+            return
+        
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView
+        
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Informazioni: {self.title}")
+        layout = QVBoxLayout(dlg)
+        
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Metrica", "Valore"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        
+        def add_row(key, val):
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(key))
+            table.setItem(row, 1, QTableWidgetItem(val))
+
+        add_row("Nome File", self.track.name.split('/')[-1])
+        add_row("Punti", str(len(self.track.points)))
+        
+        if self.capabilities.summary["elevation"]:
+            stats = self.capabilities.stats["elevation"]
+            add_row("Alt. Min (m)", f"{stats['min']:.1f}")
+            add_row("Alt. Max (m)", f"{stats['max']:.1f}")
+
+        if self.capabilities.summary["speed"]:
+            stats = self.capabilities.stats["speed"]
+            add_row("Vel. Media (km/h)", f"{stats['avg']:.1f}")
+            add_row("Vel. Max (km/h)", f"{stats['max']:.1f}")
+
+        layout.addWidget(table)
+        dlg.exec()
 
     def _abort_weather_requests(self):
         """Annulla e libera tutte le richieste meteo ancora in corso."""
