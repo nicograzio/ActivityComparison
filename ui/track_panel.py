@@ -309,7 +309,7 @@ class TrackPanel(QWidget):
             return None
         return minimum, maximum
 
-    def _current_scale_limits(self, visible_track):
+    def _current_scale_limits(self, visible_track) -> tuple[float | None, float | None]:
         """Compute the color scale limits for the current mode.
 
         Called by:
@@ -334,9 +334,13 @@ class TrackPanel(QWidget):
         # ScaleMode.AUTO with scale synchronization enabled
         if self.sync_scales_enabled and self.other_panel and self.other_panel.track:
             other_visible = self.other_panel._visible_track()
-            if other_visible:
-                my_min, my_max = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
-                other_min, other_max = self.other_panel.get_auto_limits_for_mode(self._current_mode(), other_visible)
+            if other_visible is not None:
+                my_limits = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
+                other_limits = self.other_panel.get_auto_limits_for_mode(self._current_mode(), other_visible)
+                if my_limits is None or other_limits is None:
+                    return None, None
+                my_min, my_max = my_limits
+                other_min, other_max = other_limits # type: ignore
                 
                 minimum = None
                 maximum = None
@@ -358,7 +362,7 @@ class TrackPanel(QWidget):
 
         return self.get_auto_limits_for_mode(self._current_mode(), visible_track)
 
-    def get_auto_limits_for_mode(self, mode, visible_track=None):
+    def get_auto_limits_for_mode(self, mode, visible_track=None) -> tuple[float | None, float | None]:
         """Compute automatic limits for a specific mode.
 
         Args:
@@ -651,6 +655,7 @@ class TrackPanel(QWidget):
         Called by:
             - ``import_file`` after loading a new track
         """
+        assert self.capabilities is not None
         summary = self.capabilities.summary
         stats = self.capabilities.stats
 
@@ -803,9 +808,11 @@ class TrackPanel(QWidget):
 
         track_table = QTableWidget(0, 2)
         track_table.setHorizontalHeaderLabels(["Metrica", "Valore"])
-        track_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        track_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        track_table.horizontalHeader().setStretchLastSection(True)
+        header = track_table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
         track_layout.addWidget(track_table)
 
         def add_track_row(key, val):
@@ -847,6 +854,7 @@ class TrackPanel(QWidget):
             add_track_row("Timestamp Fine", str(last_ts) if last_ts else "N/A")
 
         # Statistiche da capabilities
+        assert self.capabilities is not None
         stats = self.capabilities.stats
 
         # Altitudine
@@ -920,9 +928,11 @@ class TrackPanel(QWidget):
 
         point_table = QTableWidget(0, 2)
         point_table.setHorizontalHeaderLabels(["Campo", "Valore"])
-        point_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        point_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        point_table.horizontalHeader().setStretchLastSection(True)
+        header = point_table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
         point_layout.addWidget(point_table)
 
         def format_value(val):
@@ -934,6 +944,7 @@ class TrackPanel(QWidget):
 
         def update_point_info(index):
             point_table.setRowCount(0)
+            assert self.track is not None and self.track.points is not None
             if not self.track.points or index < 1 or index > len(self.track.points):
                 return
 
@@ -1004,6 +1015,7 @@ class TrackPanel(QWidget):
 
             # Velocità calcolata (distanza/tempo)
             if index > 1:
+                assert self.track is not None and self.track.points is not None
                 prev_pt = self.track.points[index - 2]
                 calc_speed = calculate_point_speed(prev_pt, pt)
                 if calc_speed is not None:
@@ -1097,6 +1109,7 @@ class TrackPanel(QWidget):
 
             # Pendenza calcolata (da altitudine)
             if index > 1:
+                assert self.track is not None and self.track.points is not None
                 prev_pt = self.track.points[index - 2]
                 if prev_pt.altitude is not None and pt.altitude is not None:
                     from core.analyzer import haversine_distance
@@ -1160,6 +1173,7 @@ class TrackPanel(QWidget):
         # Timeout duro di sicurezza: l'icona non resterà mai gialla oltre ~15s.
         req.setTransferTimeout(15000)
         reply = self.weather_nam.get(req)
+        assert reply is not None
         reply.setProperty("is_start", is_start)
         reply.setProperty("dt_utc", dt_utc)
         reply.setProperty("token", self.weather_token)
@@ -1227,6 +1241,7 @@ class TrackPanel(QWidget):
 
     def _update_weather_icon(self):
         """Aggiorna solo l'icona meteo con i dati correnti della traccia."""
+        assert self.capabilities is not None
         weather_available = self.capabilities.summary["weather"]
         weather_lines = self._weather_lines()
         self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
