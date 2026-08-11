@@ -18,7 +18,7 @@ Consumes:
 from pathlib import Path
 from enum import Enum
 
-from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent, QUrl
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent, QUrl, QObject
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip, QSizePolicy
 from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -102,6 +102,7 @@ class TrackPanel(QWidget):
     visible_track_changed = pyqtSignal(object)
     manual_limits_changed = pyqtSignal(float, float)
     scale_mode_changed = pyqtSignal(object)
+    other_panel: "TrackPanel | None"
 
     def __init__(self, title):
         """Create the activity panel.
@@ -201,7 +202,6 @@ class TrackPanel(QWidget):
         else:
             self.info_button.setText("ℹ")
         # (Rimosso blocco precedente che applicava l'effetto colore qui, ora gestito in show_summary)
-        self.info_button.mousePressEvent = lambda event: self._show_track_info()
         self.info_button.setToolTip("Visualizza informazioni dettagliate dell'attività")
 
 
@@ -310,7 +310,7 @@ class TrackPanel(QWidget):
             return None
         return minimum, maximum
 
-    def _current_scale_limits(self, visible_track):
+    def _current_scale_limits(self, visible_track) -> tuple[float | None, float | None]:
         """Compute the color scale limits for the current mode.
 
         Called by:
@@ -335,9 +335,13 @@ class TrackPanel(QWidget):
         # ScaleMode.AUTO with scale synchronization enabled
         if self.sync_scales_enabled and self.other_panel and self.other_panel.track:
             other_visible = self.other_panel._visible_track()
-            if other_visible:
-                my_min, my_max = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
-                other_min, other_max = self.other_panel.get_auto_limits_for_mode(self._current_mode(), other_visible)
+            if other_visible is not None:
+                my_limits = self.get_auto_limits_for_mode(self._current_mode(), visible_track)
+                other_limits = self.other_panel.get_auto_limits_for_mode(self._current_mode(), other_visible)
+                if my_limits is None or other_limits is None:
+                    return None, None
+                my_min, my_max = my_limits
+                other_min, other_max = other_limits # type: ignore
                 
                 minimum = None
                 maximum = None
@@ -359,7 +363,7 @@ class TrackPanel(QWidget):
 
         return self.get_auto_limits_for_mode(self._current_mode(), visible_track)
 
-    def get_auto_limits_for_mode(self, mode, visible_track=None):
+    def get_auto_limits_for_mode(self, mode, visible_track=None) -> tuple[float | None, float | None]:
         """Compute automatic limits for a specific mode.
 
         Args:
@@ -652,6 +656,7 @@ class TrackPanel(QWidget):
         Called by:
             - ``import_file`` after loading a new track
         """
+        assert self.capabilities is not None
         summary = self.capabilities.summary
         stats = self.capabilities.stats
 
@@ -711,7 +716,6 @@ class TrackPanel(QWidget):
         info_color = QColor("white" if is_dark_bg else "black")
         
         self._set_icon("info", "info", True, "Informazioni", [], color=info_color)
-        self.info_button.mousePressEvent = lambda event: self._show_track_info()
 
     def _weather_lines(self):
         """Costruisce le righe del tooltip meteo mostrando inizio e fine attività."""
@@ -783,37 +787,371 @@ class TrackPanel(QWidget):
         if not self.track:
             return
         
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView
-        
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
+            QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QLabel
+        )
+        from core.analyzer import calculate_point_speed, calculate_slope_range, track_distance_profile
+
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Informazioni: {self.title}")
+        dlg.resize(700, 600)
         layout = QVBoxLayout(dlg)
-        
-        table = QTableWidget(0, 2)
-        table.setHorizontalHeaderLabels(["Metrica", "Valore"])
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        
-        def add_row(key, val):
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(key))
-            table.setItem(row, 1, QTableWidgetItem(val))
 
-        add_row("Nome File", self.track.name.split('/')[-1])
-        add_row("Punti", str(len(self.track.points)))
-        
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # ============================================================
+        # TAB 1: Informazioni Traccia (track-level)
+        # ============================================================
+        tab_track = QWidget()
+        track_layout = QVBoxLayout(tab_track)
+
+        track_table = QTableWidget(0, 2)
+        track_table.setHorizontalHeaderLabels(["Metrica", "Valore"])
+        header = track_table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
+        track_layout.addWidget(track_table)
+
+        def add_track_row(key, val):
+            row = track_table.rowCount()
+            track_table.insertRow(row)
+            item_key = QTableWidgetItem(key)
+            item_key.setFlags(item_key.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            track_table.setItem(row, 0, item_key)
+            item_val = QTableWidgetItem(val)
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            track_table.setItem(row, 1, item_val)
+
+        # File info
+        add_track_row("Nome File", self.track.name.split('/')[-1])
+        add_track_row("Percorso File", self.track.name)
+        add_track_row("N. Punti Totali", str(len(self.track.points)))
+
+        # Durata
+        if self.track.points and self.track.points[0].timestamp and self.track.points[-1].timestamp:
+            try:
+                total_seconds = (self.track.points[-1].timestamp - self.track.points[0].timestamp).total_seconds()
+                hours = int(total_seconds // 3600)
+                minutes = int((total_seconds % 3600) // 60)
+                seconds = int(total_seconds % 60)
+                add_track_row("Durata Totale", f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+            except Exception:
+                pass
+
+        # Distanza
+        _, total_distance = track_distance_profile(self.track)
+        add_track_row("Distanza Totale (m)", f"{total_distance:.2f}")
+        add_track_row("Distanza Totale (km)", f"{total_distance/1000:.3f}")
+
+        # Timestamp inizio/fine
+        if self.track.points:
+            first_ts = self.track.points[0].timestamp
+            last_ts = self.track.points[-1].timestamp
+            add_track_row("Timestamp Inizio", str(first_ts) if first_ts else "N/A")
+            add_track_row("Timestamp Fine", str(last_ts) if last_ts else "N/A")
+
+        # Statistiche da capabilities
+        assert self.capabilities is not None
+        stats = self.capabilities.stats
+
+        # Altitudine
         if self.capabilities.summary["elevation"]:
-            stats = self.capabilities.stats["elevation"]
-            add_row("Alt. Min (m)", f"{stats['min']:.1f}")
-            add_row("Alt. Max (m)", f"{stats['max']:.1f}")
+            s = stats["elevation"]
+            add_track_row("Altitudine Min (m)", f"{s['min']:.1f}")
+            add_track_row("Altitudine Max (m)", f"{s['max']:.1f}")
+            if s['min'] is not None and s['max'] is not None:
+                add_track_row("Escursione Altimetrica (m)", f"{s['max'] - s['min']:.1f}")
 
+        # Pendenza
+        if self.capabilities.summary["elevation"]:
+            sl = stats["slope"]
+            add_track_row("Pendenza Min (%)", f"{sl['min']:.2f}")
+            add_track_row("Pendenza Max (%)", f"{sl['max']:.2f}")
+
+        # Velocità
         if self.capabilities.summary["speed"]:
-            stats = self.capabilities.stats["speed"]
-            add_row("Vel. Media (km/h)", f"{stats['avg']:.1f}")
-            add_row("Vel. Max (km/h)", f"{stats['max']:.1f}")
+            s = stats["speed"]
+            add_track_row("Velocità Min (km/h)", f"{s['min']:.2f}")
+            add_track_row("Velocità Max (km/h)", f"{s['max']:.2f}")
+            add_track_row("Velocità Media (km/h)", f"{s['avg']:.2f}")
 
-        layout.addWidget(table)
+        # Frequenza Cardiaca
+        if self.capabilities.summary["heart_rate"]:
+            s = stats["heart_rate"]
+            add_track_row("FC Min (bpm)", f"{s['min']:.0f}")
+            add_track_row("FC Max (bpm)", f"{s['max']:.0f}")
+            add_track_row("FC Media (bpm)", f"{s['avg']:.0f}")
+
+        # Meteo
+        if self.track.weather_start or self.track.weather_end:
+            ws = self.track.weather_start
+            we = self.track.weather_end
+            if ws:
+                add_track_row("Meteo Inizio - Condizione", ws.condition or "N/A")
+                add_track_row("Meteo Inizio - Temperatura", f"{ws.temperature:.1f}°C" if ws.temperature is not None else "N/A")
+                add_track_row("Meteo Inizio - Vento", f"{ws.wind_speed:.1f} m/s" if ws.wind_speed is not None else "N/A")
+                add_track_row("Meteo Inizio - Umidità", f"{ws.humidity}%" if ws.humidity is not None else "N/A")
+            if we:
+                add_track_row("Meteo Fine - Condizione", we.condition or "N/A")
+                add_track_row("Meteo Fine - Temperatura", f"{we.temperature:.1f}°C" if we.temperature is not None else "N/A")
+                add_track_row("Meteo Fine - Vento", f"{we.wind_speed:.1f} m/s" if we.wind_speed is not None else "N/A")
+                add_track_row("Meteo Fine - Umidità", f"{we.humidity}%" if we.humidity is not None else "N/A")
+
+        # Metadati FIT
+        if hasattr(self.track, 'sessions') and self.track.sessions:
+            add_track_row("N. Sessioni FIT", str(len(self.track.sessions)))
+        if hasattr(self.track, 'laps') and self.track.laps:
+            add_track_row("N. Lap FIT", str(len(self.track.laps)))
+        if hasattr(self.track, 'device_infos') and self.track.device_infos:
+            add_track_row("N. Device Info", str(len(self.track.device_infos)))
+
+        track_layout.addWidget(track_table)
+        tabs.addTab(tab_track, "Dati Traccia")
+
+        # ============================================================
+        # TAB 2: Informazioni Punto (point-level)
+        # ============================================================
+        tab_point = QWidget()
+        point_layout = QVBoxLayout(tab_point)
+
+        selector_layout = QHBoxLayout()
+        selector_layout.addWidget(QLabel("Seleziona Punto:"))
+        point_spin = QSpinBox()
+        point_spin.setRange(1, max(1, len(self.track.points)))
+        point_spin.setValue(1)
+        selector_layout.addWidget(point_spin)
+        selector_layout.addStretch()
+        point_layout.addLayout(selector_layout)
+
+        point_table = QTableWidget(0, 2)
+        point_table.setHorizontalHeaderLabels(["Campo", "Valore"])
+        header = point_table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
+        point_layout.addWidget(point_table)
+
+        def format_value(val):
+            if val is None:
+                return "N/A"
+            if isinstance(val, float):
+                return f"{val:.4f}"
+            return str(val)
+
+        def update_point_info(index):
+            point_table.setRowCount(0)
+            assert self.track is not None and self.track.points is not None
+            if not self.track.points or index < 1 or index > len(self.track.points):
+                return
+
+            pt = self.track.points[index - 1]
+
+            # Coordinate
+            point_table.insertRow(point_table.rowCount())
+            item_idx = QTableWidgetItem("Indice Punto")
+            item_idx.setFlags(item_idx.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 0, item_idx)
+            item_val = QTableWidgetItem(str(index))
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            point_table.insertRow(point_table.rowCount())
+            item_lat = QTableWidgetItem("Latitudine")
+            item_lat.setFlags(item_lat.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 0, item_lat)
+            item_val = QTableWidgetItem(format_value(pt.latitude))
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            point_table.insertRow(point_table.rowCount())
+            item_lon = QTableWidgetItem("Longitudine")
+            item_lon.setFlags(item_lon.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 0, item_lon)
+            item_val = QTableWidgetItem(format_value(pt.longitude))
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Altitudine
+            point_table.insertRow(point_table.rowCount())
+            item_alt = QTableWidgetItem("Altitudine (m)")
+            item_alt.setFlags(item_alt.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 0, item_alt)
+            item_val = QTableWidgetItem(format_value(pt.altitude))
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Timestamp
+            point_table.insertRow(point_table.rowCount())
+            item_ts = QTableWidgetItem("Timestamp")
+            item_ts.setFlags(item_ts.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 0, item_ts)
+            item_val = QTableWidgetItem(str(pt.timestamp) if pt.timestamp else "N/A")
+            item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Distanza cumulativa
+            if pt.distance is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_dist = QTableWidgetItem("Distanza (m)")
+                item_dist.setFlags(item_dist.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_dist)
+                item_val = QTableWidgetItem(f"{pt.distance:.2f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Velocità raw
+            if pt.speed is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_spd = QTableWidgetItem("Velocità Raw (m/s)")
+                item_spd.setFlags(item_spd.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_spd)
+                item_val = QTableWidgetItem(f"{pt.speed:.2f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Velocità calcolata (distanza/tempo)
+            if index > 1:
+                assert self.track is not None and self.track.points is not None
+                prev_pt = self.track.points[index - 2]
+                calc_speed = calculate_point_speed(prev_pt, pt)
+                if calc_speed is not None:
+                    point_table.insertRow(point_table.rowCount())
+                    item_calc = QTableWidgetItem("Velocità Calcolata (km/h)")
+                    item_calc.setFlags(item_calc.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    point_table.setItem(point_table.rowCount()-1, 0, item_calc)
+                    item_val = QTableWidgetItem(f"{calc_speed:.2f}")
+                    item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Frequenza Cardiaca
+            if pt.heart_rate is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_hr = QTableWidgetItem("Frequenza Cardiaca (bpm)")
+                item_hr.setFlags(item_hr.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_hr)
+                item_val = QTableWidgetItem(str(pt.heart_rate))
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Cadenza
+            if pt.cadence is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_cad = QTableWidgetItem("Cadenza (rpm)")
+                item_cad.setFlags(item_cad.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_cad)
+                item_val = QTableWidgetItem(str(pt.cadence))
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Temperatura
+            if pt.temperature is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_temp = QTableWidgetItem("Temperatura (°C)")
+                item_temp.setFlags(item_temp.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_temp)
+                item_val = QTableWidgetItem(f"{pt.temperature:.1f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Temperatura acqua
+            if pt.water_temp is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_wt = QTableWidgetItem("Temperatura Acqua (°C)")
+                item_wt.setFlags(item_wt.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_wt)
+                item_val = QTableWidgetItem(f"{pt.water_temp:.1f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Potenza
+            if pt.power is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_pwr = QTableWidgetItem("Potenza (W)")
+                item_pwr.setFlags(item_pwr.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_pwr)
+                item_val = QTableWidgetItem(str(pt.power))
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Corso/heading
+            if pt.course is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_crs = QTableWidgetItem("Corso (°)")
+                item_crs.setFlags(item_crs.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_crs)
+                item_val = QTableWidgetItem(f"{pt.course:.1f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Calorie
+            if pt.calories is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_cal = QTableWidgetItem("Calorie")
+                item_cal.setFlags(item_cal.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_cal)
+                item_val = QTableWidgetItem(f"{pt.calories:.1f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Pendenza raw (grade)
+            if pt.grade is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_gr = QTableWidgetItem("Pendenza Raw (%)")
+                item_gr.setFlags(item_gr.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_gr)
+                item_val = QTableWidgetItem(f"{pt.grade:.2f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Pendenza calcolata (da altitudine)
+            if index > 1:
+                assert self.track is not None and self.track.points is not None
+                prev_pt = self.track.points[index - 2]
+                if prev_pt.altitude is not None and pt.altitude is not None:
+                    from core.analyzer import haversine_distance
+                    dist = haversine_distance(prev_pt, pt)
+                    if dist > 5.0:
+                        slope = ((pt.altitude - prev_pt.altitude) / dist) * 100.0
+                        point_table.insertRow(point_table.rowCount())
+                        item_sl = QTableWidgetItem("Pendenza Calcolata (%)")
+                        item_sl.setFlags(item_sl.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        point_table.setItem(point_table.rowCount()-1, 0, item_sl)
+                        item_val = QTableWidgetItem(f"{slope:.2f}")
+                        item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Accuratezza GPS
+            if pt.gps_accuracy is not None:
+                point_table.insertRow(point_table.rowCount())
+                item_gps = QTableWidgetItem("Accuratezza GPS (m)")
+                item_gps.setFlags(item_gps.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 0, item_gps)
+                item_val = QTableWidgetItem(f"{pt.gps_accuracy:.1f}")
+                item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+            # Dati extra
+            if hasattr(pt, 'extra_data') and pt.extra_data:
+                for k, v in pt.extra_data.items():
+                    point_table.insertRow(point_table.rowCount())
+                    item_extra = QTableWidgetItem(f"Extra: {k}")
+                    item_extra.setFlags(item_extra.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    point_table.setItem(point_table.rowCount()-1, 0, item_extra)
+                    item_val = QTableWidgetItem(format_value(v))
+                    item_val.setFlags(item_val.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    point_table.setItem(point_table.rowCount()-1, 1, item_val)
+
+        update_point_info(1)
+        point_spin.valueChanged.connect(update_point_info)
+
+        tabs.addTab(tab_point, "Dati Punto")
+
+        layout.addWidget(tabs)
         dlg.exec()
 
     def _abort_weather_requests(self):
@@ -836,6 +1174,7 @@ class TrackPanel(QWidget):
         # Timeout duro di sicurezza: l'icona non resterà mai gialla oltre ~15s.
         req.setTransferTimeout(15000)
         reply = self.weather_nam.get(req)
+        assert reply is not None
         reply.setProperty("is_start", is_start)
         reply.setProperty("dt_utc", dt_utc)
         reply.setProperty("token", self.weather_token)
@@ -903,12 +1242,18 @@ class TrackPanel(QWidget):
 
     def _update_weather_icon(self):
         """Aggiorna solo l'icona meteo con i dati correnti della traccia."""
+        assert self.capabilities is not None
         weather_available = self.capabilities.summary["weather"]
         weather_lines = self._weather_lines()
         self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
         """Show icon tooltips immediately on hover."""
+        obj = a0
+        event = a1
+        # Type assertions for Pylance
+        if not isinstance(obj, QWidget) or not isinstance(event, QEvent):
+            return super().eventFilter(a0, a1)
         if obj in self.icon_labels.values():
             if event.type() in (QEvent.Type.Enter, QEvent.Type.ToolTip):
                 tooltip_text = obj.toolTip()
@@ -918,7 +1263,10 @@ class TrackPanel(QWidget):
             elif event.type() == QEvent.Type.Leave:
                 QToolTip.hideText()
                 return True
-        return super().eventFilter(obj, event)
+            elif event.type() == QEvent.Type.MouseButtonPress and obj == self.info_button:
+                self._show_track_info()
+                return True
+        return super().eventFilter(a0, a1)
 
     def _apply_mode_state(self, mode: "ScaleMode", manual_min=None, manual_max=None):
         """Apply the internal state, field editability and caption for a mode.

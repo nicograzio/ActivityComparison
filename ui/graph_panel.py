@@ -9,6 +9,7 @@ Consumed by:
     - ``MainWindow._update_graph``
 """
 
+from typing import cast
 from PyQt6.QtCore import QSize, pyqtSignal, Qt, QPoint, QPointF
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QComboBox
 import pyqtgraph as pg
@@ -141,28 +142,34 @@ class GraphPanel(QWidget):
         self.plot_widget.setMinimumSize(QSize(400, 180))
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
-        self.plot_item = self.plot_widget.getPlotItem()
+        self.plot_item = cast(pg.PlotItem, self.plot_widget.getPlotItem())
+        assert self.plot_item is not None, "PlotItem could not be created"
         
         # We use separate ViewBoxes for multiple Y axes
         # Speed is the main ViewBox
-        self.vb_speed = self.plot_item.vb
+        self.vb_speed = cast(pg.ViewBox, self.plot_item.vb)
+        assert self.vb_speed is not None, "Speed ViewBox could not be obtained"
         
         # Extra ViewBox for Heart Rate
         self.vb_hr = pg.ViewBox()
-        self.plot_item.scene().addItem(self.vb_hr)
+        scene = self.plot_item.scene()
+        assert scene is not None, "Scene could not be obtained"
+        scene.addItem(self.vb_hr)
         
         # Extra ViewBox for Altitude
         self.vb_alt = pg.ViewBox()
-        self.plot_item.scene().addItem(self.vb_alt)
+        scene.addItem(self.vb_alt)
         
         # Add axes to the layout
         # Speed Axis (Left 1)
         self.ax_speed = self.plot_item.getAxis('left')
+        assert self.ax_speed is not None, "Speed axis could not be obtained"
         self.ax_speed.setLabel('Velocità', color='#3498db', units='km/h')
         self.ax_speed.setPen('#3498db')
         
         # Altitude Axis: use the default right axis from PlotItem for the first right-side axis.
         self.ax_alt = self.plot_item.getAxis('right')
+        assert self.ax_alt is not None, "Altitude axis could not be obtained"
         self.ax_alt.setLabel('Altitudine', color='#888888', units='m')
         self.ax_alt.setPen('#888888')
         self.ax_alt.linkToView(self.vb_alt)
@@ -170,7 +177,9 @@ class GraphPanel(QWidget):
         
         # Heart Rate Axis: add a second right-side axis in a new column.
         self.ax_hr = pg.AxisItem('right')
-        self.plot_item.layout.addItem(self.ax_hr, 2, 3)
+        plot_item_layout = self.plot_item.layout
+        assert plot_item_layout is not None, "PlotItem layout could not be obtained"
+        plot_item_layout.addItem(self.ax_hr, 2, 3)
         self.ax_hr.setLabel('Cardio', color='#e74c3c', units='bpm')
         self.ax_hr.setPen('#e74c3c')
         self.ax_hr.linkToView(self.vb_hr)
@@ -182,8 +191,9 @@ class GraphPanel(QWidget):
 
         # Synchronize ViewBox resizing
         def update_views():
-            self.vb_hr.setGeometry(self.vb_speed.sceneBoundingRect())
-            self.vb_alt.setGeometry(self.vb_speed.sceneBoundingRect())
+            vb_speed_rect = self.vb_speed.sceneBoundingRect()
+            self.vb_hr.setGeometry(vb_speed_rect)
+            self.vb_alt.setGeometry(vb_speed_rect)
         self.vb_speed.sigResized.connect(update_views)
 
         # Style the curves
@@ -221,7 +231,9 @@ class GraphPanel(QWidget):
 
 
         # Connect mouse motion event
-        self.proxy = pg.SignalProxy(self.plot_item.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_move)
+        plot_scene = self.plot_item.scene()
+        assert plot_scene is not None, "Scene could not be obtained for SignalProxy"
+        self.proxy = pg.SignalProxy(plot_scene.sigMouseMoved, rateLimit=60, slot=self._on_mouse_move)
         self.vb_hr.setVisible(True)  # Ensure HR axis is visible
 
     def _update_visibility(self):
@@ -344,7 +356,7 @@ class GraphPanel(QWidget):
         self._update_visibility()
         
         # Reset view to data
-        self.plot_item.autoRange()
+        self.vb_speed.autoRange()
         self.vb_alt.autoRange()
         self.vb_hr.autoRange()
 
@@ -392,7 +404,8 @@ class GraphPanel(QWidget):
     def _on_mouse_move(self, evt):
         """Handle mouse movement on the graph canvas."""
         pos = evt[0]
-        if self.plot_item.sceneBoundingRect().contains(pos):
+        plot_item_rect = self.plot_item.sceneBoundingRect()
+        if plot_item_rect.contains(pos):
             mouse_point = self.vb_speed.mapSceneToView(pos)
             x_pos = mouse_point.x()
             
@@ -478,7 +491,7 @@ class GraphPanel(QWidget):
 
                 # Convert scene pixel coords to plot data coords for TextItem positioning
                 scene_point = QPointF(label_x_scene, label_y_scene)
-                view_point = self.plot_item.vb.mapSceneToView(scene_point)
+                view_point = self.vb_speed.mapSceneToView(scene_point)
 
                 self.label.setPos(view_point.x(), view_point.y())
                 self.label.show()
@@ -499,10 +512,10 @@ class GraphPanel(QWidget):
         self.marker_hr.hide()
         self.label.hide()
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, a0):
         """Override leaveEvent to hide crosshair when mouse leaves the widget."""
         self._hide_interactive_elements()
-        super().leaveEvent(event)
+        super().leaveEvent(a0)
 
     def set_hovered_point_by_index(self, point_index: int):
         """Show the hovered point marker by data index.
