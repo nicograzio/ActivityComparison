@@ -776,17 +776,32 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _highlight_strava_segments_on_maps(self):
-        """Draw found Strava segments on both maps."""
-        for panel in (self.left_panel, self.right_panel):
-            if panel.map:
-                panel.map.draw_highlighted_segments([
-                    {
-                        "coords_a": occ.get("coords", []),
-                        "coords_b": [],
-                        "id": i + 1
-                    }
-                    for i, occ in enumerate(self._strava_occurrences)
-                ])
+        """Draw each found Strava segment only on the map of its own track.
+
+        Occurrences are rendered on the left map when they belong to the left
+        track, on the right map otherwise, so the highlight is accurate even
+        when only one of the two tracks is loaded.
+        """
+        left_track = self.left_panel.track
+        right_track = self.right_panel.track
+
+        left_segments = []
+        right_segments = []
+        for i, occ in enumerate(self._strava_occurrences):
+            occ_track = occ.get("track")
+            if left_track is not None and occ_track is left_track:
+                left_segments.append(
+                    {"coords": occ.get("coords", []), "id": i + 1}
+                )
+            elif right_track is not None and occ_track is right_track:
+                right_segments.append(
+                    {"coords": occ.get("coords", []), "id": i + 1}
+                )
+
+        if left_track and self.left_panel.map:
+            self.left_panel.map.draw_highlighted_segments(left_segments, coord_key="coords")
+        if right_track and self.right_panel.map:
+            self.right_panel.map.draw_highlighted_segments(right_segments, coord_key="coords")
 
     def _clear_strava_segment_highlights(self):
         """Remove Strava segment highlights from both maps."""
