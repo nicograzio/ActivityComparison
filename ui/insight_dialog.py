@@ -341,8 +341,8 @@ class SegmentDetailDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        duration_a = _get_track_duration(track_a)
-        duration_b = _get_track_duration(track_b)
+        duration_a = segment.get('time_a_sec')
+        duration_b = segment.get('time_b_sec')
 
         summary_text = (
             f"<b>Segmento {segment.get('id', '?')}</b> | "
@@ -951,9 +951,14 @@ class SegmentDetailDialog(QDialog):
 
             # Velocità media = distanza del bucket / tempo impiegato per percorrerlo
             avg_speed_a = None
-            if cum_ts_a[b_idx] is not None:
-                time_start = cum_ts_a[b_idx - 1] if b_idx > 0 and cum_ts_a[b_idx - 1] is not None else 0.0
-                time_in_bucket = cum_ts_a[b_idx] - time_start
+            cum_a_val = cum_ts_a[b_idx]
+            if cum_a_val is not None:
+                time_start = 0.0
+                if b_idx > 0:
+                    prev = cum_ts_a[b_idx - 1]
+                    if prev is not None:
+                        time_start = float(prev)
+                time_in_bucket = float(cum_a_val) - time_start
                 dist_in_bucket = min((b_idx + 1) * bucket_size, common_end) - b_idx * bucket_size
                 if time_in_bucket > 0:
                     avg_speed_a = (dist_in_bucket / time_in_bucket) * 3.6
@@ -962,9 +967,14 @@ class SegmentDetailDialog(QDialog):
             item_sa.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             avg_speed_b = None
-            if cum_ts_b[b_idx] is not None:
-                time_start = cum_ts_b[b_idx - 1] if b_idx > 0 and cum_ts_b[b_idx - 1] is not None else 0.0
-                time_in_bucket = cum_ts_b[b_idx] - time_start
+            cum_b_val = cum_ts_b[b_idx]
+            if cum_b_val is not None:
+                time_start = 0.0
+                if b_idx > 0:
+                    prev = cum_ts_b[b_idx - 1]
+                    if prev is not None:
+                        time_start = float(prev)
+                time_in_bucket = float(cum_b_val) - time_start
                 dist_in_bucket = min((b_idx + 1) * bucket_size, common_end) - b_idx * bucket_size
                 if time_in_bucket > 0:
                     avg_speed_b = (dist_in_bucket / time_in_bucket) * 3.6
