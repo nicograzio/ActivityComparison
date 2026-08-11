@@ -37,6 +37,12 @@ class TrackPoint:
     timestamp: Optional[Any] = None
     speed: Optional[float] = None
     heart_rate: Optional[int] = None
+    cadence: Optional[int] = None
+    temperature: Optional[float] = None
+    water_temp: Optional[float] = None
+    depth: Optional[float] = None
+    power: Optional[float] = None
+    course: Optional[float] = None
 
 
 class Track:
@@ -64,6 +70,12 @@ class Track:
         self._np_altitudes: Optional[np.ndarray] = None
         self._np_heart_rates: Optional[np.ndarray] = None
         self._np_speeds: Optional[np.ndarray] = None
+        self._np_cadences: Optional[np.ndarray] = None
+        self._np_temperatures: Optional[np.ndarray] = None
+        self._np_water_temps: Optional[np.ndarray] = None
+        self._np_depths: Optional[np.ndarray] = None
+        self._np_powers: Optional[np.ndarray] = None
+        self._np_courses: Optional[np.ndarray] = None
 
     def add_point(self, point: TrackPoint) -> None:
         """Aggiunge un punto alla traccia e invalida la cache.
@@ -81,6 +93,12 @@ class Track:
         self._np_altitudes = None
         self._np_heart_rates = None
         self._np_speeds = None
+        self._np_cadences = None
+        self._np_temperatures = None
+        self._np_water_temps = None
+        self._np_depths = None
+        self._np_powers = None
+        self._np_courses = None
 
     @property
     def latitudes(self) -> np.ndarray:
@@ -125,3 +143,63 @@ class Track:
                 dtype=np.float64
             )
         return self._np_speeds
+
+    @property
+    def cadences(self) -> np.ndarray:
+        """Array NumPy delle cadenze (float64, np.nan per valori assenti)."""
+        if self._np_cadences is None:
+            self._np_cadences = np.array(
+                [p.cadence if p.cadence is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_cadences
+
+    @property
+    def temperatures(self) -> np.ndarray:
+        """Array NumPy delle temperature (float64, np.nan per valori assenti)."""
+        if self._np_temperatures is None:
+            self._np_temperatures = np.array(
+                [p.temperature if p.temperature is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_temperatures
+
+    @property
+    def water_temps(self) -> np.ndarray:
+        """Array NumPy delle temperature dell'acqua (float64, np.nan per valori assenti)."""
+        if self._np_water_temps is None:
+            self._np_water_temps = np.array(
+                [p.water_temp if p.water_temp is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_water_temps
+
+    @property
+    def depths(self) -> np.ndarray:
+        """Array NumPy delle profondità (float64, np.nan per valori assenti)."""
+        if self._np_depths is None:
+            self._np_depths = np.array(
+                [p.depth if p.depth is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_depths
+
+    @property
+    def powers(self) -> np.ndarray:
+        """Array NumPy delle potenze (float64, np.nan per valori assenti)."""
+        if self._np_powers is None:
+            self._np_powers = np.array(
+                [p.power if p.power is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_powers
+
+    @property
+    def courses(self) -> np.ndarray:
+        """Array NumPy delle direzioni (float64, np.nan per valori assenti)."""
+        if self._np_courses is None:
+            self._np_courses = np.array(
+                [p.course if p.course is not None else np.nan for p in self.points],
+                dtype=np.float64
+            )
+        return self._np_courses
