@@ -67,12 +67,14 @@ class VectorMapWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.view = QWebEngineView(self)
+        self.view = QWebEngineView(self)  # type: ignore[call-arg]
         self.view.setZoomFactor(1.0)
-        self.view.settings().setAttribute(
-            self.view.settings().WebAttribute.ShowScrollBars,
-            False,
-        )
+        view_settings = self.view.settings()
+        if view_settings is not None:
+            view_settings.setAttribute(
+                view_settings.WebAttribute.ShowScrollBars,
+                False,
+            )
         layout.addWidget(self.view)
 
         index_path = Path(__file__).resolve().parent / "maplibre" / "index.html"
@@ -101,10 +103,13 @@ class VectorMapWidget(QWidget):
         Called by:
             - internal helpers when exchanging state with MapLibre
         """
-        if callback is None:
-            self.view.page().runJavaScript(script)
+        page = self.view.page()
+        if page is None:
             return
-        self.view.page().runJavaScript(script, callback)
+        if callback is None:
+            page.runJavaScript(script)
+        else:
+            page.runJavaScript(script, callback)
 
     @staticmethod
     def _normalize_view_state(state: Any) -> dict[str, Any]:

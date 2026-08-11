@@ -18,7 +18,7 @@ Consumes:
 from pathlib import Path
 from enum import Enum
 
-from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent, QUrl
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QEvent, QUrl, QObject
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QLineEdit, QFrame, QGraphicsColorizeEffect, QToolTip, QSizePolicy
 from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -201,7 +201,6 @@ class TrackPanel(QWidget):
         else:
             self.info_button.setText("ℹ")
         # (Rimosso blocco precedente che applicava l'effetto colore qui, ora gestito in show_summary)
-        self.info_button.mousePressEvent = lambda event: self._show_track_info()
         self.info_button.setToolTip("Visualizza informazioni dettagliate dell'attività")
 
 
@@ -711,7 +710,6 @@ class TrackPanel(QWidget):
         info_color = QColor("white" if is_dark_bg else "black")
         
         self._set_icon("info", "info", True, "Informazioni", [], color=info_color)
-        self.info_button.mousePressEvent = lambda event: self._show_track_info()
 
     def _weather_lines(self):
         """Costruisce le righe del tooltip meteo mostrando inizio e fine attività."""
@@ -1233,8 +1231,13 @@ class TrackPanel(QWidget):
         weather_lines = self._weather_lines()
         self._set_icon("weather", "weather", weather_available, "Condizioni Meteo", weather_lines)
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
         """Show icon tooltips immediately on hover."""
+        obj = a0
+        event = a1
+        # Type assertions for Pylance
+        if not isinstance(obj, QWidget) or not isinstance(event, QEvent):
+            return super().eventFilter(a0, a1)
         if obj in self.icon_labels.values():
             if event.type() in (QEvent.Type.Enter, QEvent.Type.ToolTip):
                 tooltip_text = obj.toolTip()
@@ -1244,7 +1247,10 @@ class TrackPanel(QWidget):
             elif event.type() == QEvent.Type.Leave:
                 QToolTip.hideText()
                 return True
-        return super().eventFilter(obj, event)
+            elif event.type() == QEvent.Type.MouseButtonPress and obj == self.info_button:
+                self._show_track_info()
+                return True
+        return super().eventFilter(a0, a1)
 
     def _apply_mode_state(self, mode: "ScaleMode", manual_min=None, manual_max=None):
         """Apply the internal state, field editability and caption for a mode.
