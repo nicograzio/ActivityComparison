@@ -64,7 +64,9 @@ class MapWidget(QWidget):
 
         self.view = QWebEngineView(self)
         self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.view.page().setWebChannel(self._channel)
+        page = self.view.page()
+        if page is not None:
+            page.setWebChannel(self._channel)
         layout.addWidget(self.view)
 
         self.view.loadFinished.connect(self._on_load_finished)
@@ -80,12 +82,13 @@ class MapWidget(QWidget):
         self.viewChanged.emit(state)
 
     def _on_load_finished(self, ok: bool):
-        self._ready = True  # Mark as ready anyway to allow app to proceed
-        self.mapReady.emit()
-        if ok and self._pending_draw is not None:
-                track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
-                self._pending_draw = None
-                self.draw_track(track, color_mode, minimum, maximum, fit_bounds)
+        if ok:
+            self._ready = True
+            self.mapReady.emit()
+            if self._pending_draw is not None:
+                    track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
+                    self._pending_draw = None
+                    self.draw_track(track, color_mode, minimum, maximum, fit_bounds)
 
     def _get_html_template(self, m: folium.Map) -> str:
         """Get the HTML content of the folium map with added JS for sync and dynamic drawing."""
@@ -116,8 +119,6 @@ class MapWidget(QWidget):
             border: 2px solid #FF0000;
             color: black;
         }
-            color: black;
-        }
         </style>
         <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script>
@@ -137,7 +138,7 @@ class MapWidget(QWidget):
                         });
                     }
 
-                    window.__ignoreViewEvent = false;
+                    window.__ignoreViewEvent = 0;
 
                     map.on('moveend', function() {
                         if (window.__ignoreViewEvent && window.__ignoreViewEvent > 0) {
@@ -184,8 +185,6 @@ class MapWidget(QWidget):
 
                         // Canvas renderer for high-performance canvas path drawing
                         var canvasRenderer = L.canvas();
-
-                        if (points.length < 2) return;
 
                         var currentGroup = [[points[0][0], points[0][1]], [points[1][0], points[1][1]]];
                         var currentColor = points[0][2] || 'blue';
@@ -344,9 +343,9 @@ class MapWidget(QWidget):
         setTimeout(setupSync, 500);
         </script>
         """
-        if "</body>" in html:
-            return html.replace("</body>", f"{sync_script}</body>")
-
+        parts = html.rsplit("</body>", 1)
+        if len(parts) == 2:
+            return f"{parts[0]}{sync_script}</body>{parts[1]}"
         return html + sync_script
 
     def _update_map(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
@@ -379,7 +378,9 @@ class MapWidget(QWidget):
 
         points = getattr(track, "points", None) or []
         if not points:
-            self.view.page().runJavaScript("if (window.drawTrack) window.drawTrack([], false);")
+            page = self.view.page()
+            if page:
+                page.runJavaScript("if (window.drawTrack) window.drawTrack([], false);")
             self._points_list = []
             return
 
@@ -401,7 +402,8 @@ class MapWidget(QWidget):
                         values.append(None)
             elif color_mode == "Frequenza cardiaca":
                 for i in range(len(points) - 1):
-                    hr = points[i+1].heart_rate
+                    next_point = points[i+1]
+                    hr = getattr(next_point, 'heart_rate', None) if next_point is not None else None
                     values.append(float(hr) if hr is not None else None)
 
         # Costruzione lista JSON ottimizzata
@@ -417,7 +419,10 @@ class MapWidget(QWidget):
             points_js.append([p.latitude, p.longitude, color])
 
         js_data = json.dumps(points_js)
-        self.view.page().runJavaScript(f"if (window.drawTrack) window.drawTrack({js_data}, true);")
+        fit_bounds_js = "true" if fit_bounds else "false"
+        page = self.view.page()
+        if page:
+            page.runJavaScript(f"if (window.drawTrack) window.drawTrack({js_data}, {fit_bounds_js});")
 
     def get_view_state(self) -> dict[str, Any]:
         return self._last_view_state
@@ -426,10 +431,12 @@ class MapWidget(QWidget):
         if not self._ready:
             callback(self._last_view_state)
             return
-        self.view.page().runJavaScript(
-            "window.getViewState ? window.getViewState() : null;",
-            lambda result: callback(result or self._last_view_state),
-        )
+        page = self.view.page()
+        if page:
+            page.runJavaScript(
+                "window.getViewState ? window.getViewState() : null;",
+                lambda result: callback(result or self._last_view_state),
+            )
 
     def set_view_state(self, state: Any, callback=None):
         if not self._ready:
@@ -455,10 +462,12 @@ class MapWidget(QWidget):
             if callback:
                 callback(result)
 
-        self.view.page().runJavaScript(
-            f"if (window.setViewState) window.setViewState({js_state});",
-            _on_set_done,
-        )
+        page = self.view.page()
+        if page:
+            page.runJavaScript(
+                f"if (window.setViewState) window.setViewState({js_state});",
+                _on_set_done,
+            )
         self._last_view_state = normalized
 
     def set_hovered_point(self, point_index: int):
@@ -472,7 +481,9 @@ class MapWidget(QWidget):
         """
         if point_index < 0 or point_index >= len(self._points_list):
             self._current_hovered_point = None
-            self.view.page().runJavaScript("if (window.clearHoveredPoint) window.clearHoveredPoint();")
+            page = self.view.page()
+            if page:
+                page.runJavaScript("if (window.clearHoveredPoint) window.clearHoveredPoint();")
             return
 
         self._current_hovered_point = point_index
@@ -486,7 +497,9 @@ class MapWidget(QWidget):
                 "index": point_index,
             }
         )
-        self.view.page().runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")
+        page = self.view.page()
+        if page:
+            page.runJavaScript(f"if (window.drawHoveredPoint) window.drawHoveredPoint({point_data});")
 
     def draw_highlighted_segments(self, segments: list[dict], coord_key: str = "coords_a"):
         """Draw highlighted segments on the map.
@@ -505,12 +518,16 @@ class MapWidget(QWidget):
         # Prepare segments data for JavaScript - only draw the specified track's coordinates
         js_segments = []
         for seg in segments:
+            if not isinstance(seg, dict):
+                continue
             coords = seg.get(coord_key, [])
             if coords:
                 js_segments.append({"coords": coords, "id": seg.get("id")})
 
         js_data = json.dumps(js_segments)
-        self.view.page().runJavaScript(f"if (window.drawHighlightedSegments) window.drawHighlightedSegments({js_data});")
+        page = self.view.page()
+        if page:
+            page.runJavaScript(f"if (window.drawHighlightedSegments) window.drawHighlightedSegments({js_data});")
 
     def clear_highlighted_segments(self):
         """Remove highlighted segments from the map.
@@ -521,4 +538,6 @@ class MapWidget(QWidget):
         self._highlighted_segments = []
         if not self._ready:
             return
-        self.view.page().runJavaScript("if (window.clearHighlightedSegments) window.clearHighlightedSegments();")
+        page = self.view.page()
+        if page:
+            page.runJavaScript("if (window.clearHighlightedSegments) window.clearHighlightedSegments();")
