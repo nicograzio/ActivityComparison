@@ -223,7 +223,7 @@ def _walk_forward(
             continue
 
         track_i = int(cand[k])
-        if prev_seg is not None:
+        if prev_seg is not None and prev_track is not None:
             d_seg = segment_profile[seg_i] - segment_profile[prev_seg]
             d_track = track_profile[track_i] - track_profile[prev_track]
             if d_track > max(d_seg * progress_ratio, d_seg + progress_slack_m):
