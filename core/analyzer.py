@@ -290,6 +290,21 @@ def calculate_altitude_range(track: Track) -> Tuple[Optional[float], Optional[fl
     return float(min(valid_altitudes)), float(max(valid_altitudes))
 
 
+def calculate_heart_rate_range(track: Track) -> Tuple[Optional[float], Optional[float]]:
+    """Restituisce la frequenza cardiaca minima e massima di una traccia in bpm."""
+    points = getattr(track, "points", [])
+    if not points:
+        return None, None
+
+    hrs = [getattr(p, "heart_rate", None) for p in points]
+    valid_hrs = [hr for hr in hrs if hr is not None]
+
+    if not valid_hrs:
+        return None, None
+
+    return float(min(valid_hrs)), float(max(valid_hrs))
+
+
 def _interpolate_number(start: Optional[float], end: Optional[float], fraction: float) -> Optional[float]:
     """Interpolate a scalar value between two endpoints.
 

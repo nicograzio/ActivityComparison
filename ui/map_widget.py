@@ -418,7 +418,7 @@ class MapWidget(QWidget):
                 val = values[i]
                 color = "#808080"  # Grigio di default per dati mancanti
                 if val is not None:
-                    color_q = value_to_color(val, minimum or 0, maximum or 0)
+                    color_q = value_to_color(val, minimum or 0, maximum or 0, color_mode)
                     color = color_q.name()
             
             points_js.append([p.latitude, p.longitude, color])

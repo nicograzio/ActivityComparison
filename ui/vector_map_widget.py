@@ -239,6 +239,9 @@ class VectorMapWidget(QWidget):
         if color_mode == "Altitudine":
             alt = getattr(current, "altitude", None)
             return float(alt) if alt is not None else None
+        if color_mode == "Frequenza cardiaca":
+            hr = getattr(current, "heart_rate", None)
+            return float(hr) if hr is not None else None
         return None
 
     def draw_track(self, track, color_mode: str = "Nessuna", minimum=None, maximum=None):
@@ -268,8 +271,8 @@ class VectorMapWidget(QWidget):
 
             value = self._segment_value(previous, current, color_mode)
             color = "#808080"
-            if color_mode in ("Velocità", "Pendenza", "Altitudine") and value is not None:
-                color = self._qcolor_to_hex(value_to_color(value, minimum or 0, maximum or 0))
+            if color_mode in ("Velocità", "Pendenza", "Altitudine", "Frequenza cardiaca") and value is not None:
+                color = self._qcolor_to_hex(value_to_color(value, minimum or 0, maximum or 0, color_mode))
 
             line_features.append({
                 "type": "Feature",

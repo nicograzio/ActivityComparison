@@ -38,6 +38,7 @@ from core.analyzer import (
     calculate_speed_range,
     calculate_slope_range,
     calculate_altitude_range,
+    calculate_heart_rate_range,
     track_distance_profile,
     trim_track_by_distance,
 )
@@ -385,6 +386,8 @@ class TrackPanel(QWidget):
             return calculate_slope_range(visible_track)
         if mode == "Altitudine":
             return calculate_altitude_range(visible_track)
+        if mode == "Frequenza cardiaca":
+            return calculate_heart_rate_range(visible_track)
         return None, None
 
     def set_color_mode(self, mode: str):
