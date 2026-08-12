@@ -54,7 +54,10 @@ if __name__ == "__main__":
     
     window = MainWindow()
     # Must show full screen immediately so native window handle exists for QWebEngine
-    window.showFullScreen()
+    # window.showFullScreen()
+    
+    # Show normal window
+    window.show()
     
     def dismiss_splash():
         if splash.isVisible():

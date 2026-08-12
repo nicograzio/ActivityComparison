@@ -15,6 +15,7 @@ Consumes:
 import os
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QSplitter, QMessageBox
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 from ui.comparison_controls_panel import ComparisonControlsPanel
 from ui.track_panel import TrackPanel, ScaleMode
@@ -155,6 +156,14 @@ class MainWindow(QMainWindow):
 
         central.setLayout(main_layout)
         self.setCentralWidget(central)
+
+        # 1. Crea la scorciatoia per F11 per alternare (Toggle) Fullscreen / Finestra Normale
+        self.shortcut_f11 = QShortcut(QKeySequence("F11"), self)
+        self.shortcut_f11.activated.connect(self.toggle_fullscreen)
+        
+        # 2. Crea la scorciatoia per Esc per forzare sempre il ritorno a Finestra Normale
+        self.shortcut_esc = QShortcut(QKeySequence("Escape"), self)
+        self.shortcut_esc.activated.connect(self.showNormal)
 
     @staticmethod
     def _build_side_splitter(panel, graph):
@@ -913,3 +922,9 @@ class MainWindow(QMainWindow):
         if self._maps_ready_count >= 2:
             self.fullyReady.emit()
 
+    def toggle_fullscreen(self):
+        """Alterna lo stato della finestra tra tutto schermo e modalità normale"""
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
