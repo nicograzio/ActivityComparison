@@ -120,7 +120,6 @@ def track_distance_profile(track: Track) -> Tuple[List[float], float]:
     return cum_distances.tolist(), total_distance
 
 
-
 def calculate_track_series(
     track: Track,
     x_axis_mode: str = "Tempo",
@@ -257,13 +256,13 @@ def calculate_slope_range(track: Track) -> Tuple[Optional[float], Optional[float
     # Maschera per considerare solo segmenti con distanza sufficiente (> 5.0m)
     valid_mask = distances > 5.0
     if not np.any(valid_mask):
-        return 0.0, 0.0
+        return None, None
 
     delta_alt = smoothed_altitudes[1:] - smoothed_altitudes[:-1]
     slopes = (delta_alt[valid_mask] / distances[valid_mask]) * 100.0
 
     if len(slopes) == 0:
-        return 0.0, 0.0
+        return None, None
 
     return float(np.min(slopes)), float(np.max(slopes))
 
@@ -420,6 +419,8 @@ def trim_track_by_distance(track, start_distance_m, end_distance_m):
         append_point(points[0])
 
     return trimmed
+
+
 def find_common_segments(
     track_a: Track,
     track_b: Track,
@@ -482,7 +483,7 @@ def find_common_segments(
     # Funzione helper per estrarre segmenti contigui da un array booleano
     def _extract_segments(mask: np.ndarray, max_gap: int = 5) -> List[Tuple[int, int]]:
         """Estrae segmenti contigui, tollerando piccoli gap fino a max_gap punti.
-        
+
         Questo evita che un singolo punto GPS leggermente fuori soglia (es. jitter)
         spezzi un segmento altrimenti valido in due tronconi separati.
         """
@@ -497,7 +498,6 @@ def find_common_segments(
                     if mask[i]:
                         last_true = i
                     elif (i - last_true) > max_gap:
-                        # Abbiamo superato il gap massimo consentito
                         break
                     i += 1
                 segs.append((start, last_true))
@@ -507,7 +507,7 @@ def find_common_segments(
 
     # Trova tutti i segmenti comuni in A
     segments_a = _extract_segments(is_a_common, max_gap=8)
-    
+
     # Per trovare i segmenti in B, corri il matching in direzione inversa:
     # per ogni punto di B, trova il punto più vicino in A
     grid_a = {}
@@ -544,66 +544,52 @@ def find_common_segments(
     if not segments_a or not segments_b:
         return []
 
-    # Per ogni coppia di segmenti (A, B) individuati geograficamente, raffiniamo i confini
-    # per assicurarci che coprano esattamente lo stesso tratto e filtriamo i falsi positivi.
     result = []
     seg_id = 1
-    
+
     for a_start, a_end in segments_a:
         for b_start_raw, b_end_raw in segments_b:
             # Verifica se il segmento A ha punti che mappano a questo segmento B.
-            # Questo evita di accoppiare pezzi di traccia che sono vicini ma non correlati.
-            matching_indices = [i for i in range(a_start, a_end + 1) 
+            matching_indices = [i for i in range(a_start, a_end + 1)
                                 if b_start_raw <= matched_b_indices[i] <= b_end_raw]
-            
+
             # Se meno del 20% dei punti di A trova riscontro in questo blocco di B, saltiamo.
             if len(matching_indices) < (a_end - a_start + 1) * 0.2:
                 continue
-                
+
             # Raffinamento spaziale: cerchiamo in B il miglior match geografico per l'inizio e la fine di A.
-            # Questo elimina i metri extra ("pendolamento") ai confini.
             best_b_start = b_start_raw
             min_dist_start = float('inf')
             best_b_end = b_end_raw
             min_dist_end = float('inf')
-            
+
             for i in range(b_start_raw, b_end_raw + 1):
                 d_start = haversine_distance(track_a.points[a_start], track_b.points[i])
                 if d_start < min_dist_start:
                     min_dist_start = d_start
                     best_b_start = i
-                
+
                 d_end = haversine_distance(track_a.points[a_end], track_b.points[i])
                 if d_end < min_dist_end:
                     min_dist_end = d_end
                     best_b_end = i
-            
+
             b_start, b_end = best_b_start, best_b_end
             if b_start > b_end:
                 b_start, b_end = b_end, b_start
-                
+
             if (b_end - b_start) < 1:
                 continue
 
             # Calcola la lunghezza effettiva della sovrapposizione (basata su A)
             overlap_length = profile_a[a_end] - profile_a[a_start]
-            
-            if overlap_length < min_segment_length_m:
-                continue
 
-            # Estrai i punti sovrapposti da A e B.
-            sub_pts_a = track_a.points[a_start:a_end + 1]
-            
             if overlap_length < min_segment_length_m:
                 continue
 
             # Estrai i punti sovrapposti da A e B.
             sub_pts_a = track_a.points[a_start:a_end + 1]
             coords_a = [(p.latitude, p.longitude) for p in sub_pts_a]
-            # Usa le stesse coordinate di A anche per B: le due mappe
-            # evidenziano lo stesso poligrafo (vedi README_SEGMENTI_COMUNI.md),
-            # evitando polilinee diverse dovute a densita' di campionamento diversa.
-            # coords_b = coords_a
 
             sub_pts_b = track_b.points[b_start:b_end + 1]
             coords_b = [(p.latitude, p.longitude) for p in sub_pts_b]
@@ -632,13 +618,14 @@ def find_common_segments(
                 else 0.0
             )
 
-            # Lunghezza comune confrontabile: la più corta delle due, così
-            # l'ultimo bucket termina alla fine della traccia più corta e per
-            # la più lunga viene interpolato il punto "equivalente".
+            # Lunghezza comune confrontabile: la più corta delle due.
             if length_a > 0 and length_b > 0:
                 effective_length = min(length_a, length_b)
             else:
                 effective_length = overlap_length
+
+            if effective_length < min_segment_length_m:
+                continue
 
             # Calcola le metriche per la porzione sovrapposta
             speeds_a = [
@@ -666,8 +653,8 @@ def find_common_segments(
                     resampled_points_a[-1].timestamp - resampled_points_a[0].timestamp
                 ).total_seconds()
 
-            if avg_speed_a is None and time_a_sec and time_a_sec > 0 and effective_length > 0:
-                avg_speed_a = (effective_length / time_a_sec) * 3.6
+            if avg_speed_a is None and time_a_sec and time_a_sec > 0 and length_a > 0:
+                avg_speed_a = (length_a / time_a_sec) * 3.6
 
             speeds_b = [
                 p.speed * 3.6 for p in resampled_points_b if p.speed is not None
@@ -694,8 +681,8 @@ def find_common_segments(
                     resampled_points_b[-1].timestamp - resampled_points_b[0].timestamp
                 ).total_seconds()
 
-            if avg_speed_b is None and time_b_sec and time_b_sec > 0 and effective_length > 0:
-                avg_speed_b = (effective_length / time_b_sec) * 3.6
+            if avg_speed_b is None and time_b_sec and time_b_sec > 0 and length_b > 0:
+                avg_speed_b = (length_b / time_b_sec) * 3.6
 
             result.append({
                 "id": seg_id,
@@ -747,6 +734,9 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
     valid_speeds_a = [s["avg_speed_a"] for s in segments if s["avg_speed_a"] is not None]
     valid_speeds_b = [s["avg_speed_b"] for s in segments if s["avg_speed_b"] is not None]
 
+    mean_spd_a = 0.0
+    mean_spd_b = 0.0
+    diff_spd = 0.0
     if valid_speeds_a and valid_speeds_b:
         mean_spd_a = float(np.mean(valid_speeds_a))
         mean_spd_b = float(np.mean(valid_speeds_b))
@@ -863,4 +853,3 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
             insights.append(f"💬 <b>Raccomandazione:</b> {name_a} è risultata più veloce. Analizza la distribuzione dello sforzo in {name_b}: forse hai iniziato troppo forte o gestito male i tratti tecnici.")
 
     return insights
-
