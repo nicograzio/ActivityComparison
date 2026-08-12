@@ -405,6 +405,11 @@ class MapWidget(QWidget):
                     next_point = points[i+1]
                     hr = getattr(next_point, 'heart_rate', None) if next_point is not None else None
                     values.append(float(hr) if hr is not None else None)
+            elif color_mode == "Altitudine":
+                for i in range(len(points) - 1):
+                    next_point = points[i+1]
+                    alt = getattr(next_point, 'altitude', None) if next_point is not None else None
+                    values.append(float(alt) if alt is not None else None)
 
         # Costruzione lista JSON ottimizzata
         for i, p in enumerate(points):

@@ -88,6 +88,7 @@ class TrackCapabilities:
 
         if self.has_elevation:
             modes.append("Pendenza")
+            modes.append("Altitudine")
 
         if self.has_heart_rate:
             modes.append("Frequenza cardiaca")

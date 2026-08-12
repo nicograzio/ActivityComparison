@@ -267,6 +267,29 @@ def calculate_slope_range(track: Track) -> Tuple[Optional[float], Optional[float
     return float(np.min(slopes)), float(np.max(slopes))
 
 
+def calculate_altitude_range(track: Track) -> Tuple[Optional[float], Optional[float]]:
+    """Restituisce l'altitudine minima e massima di una traccia in metri.
+
+    Args:
+        track: Traccia da analizzare.
+
+    Returns:
+        Tuple[Optional[float], float | None]: Altitudine minima e massima,
+        oppure ``None, None`` se non disponibili dati.
+    """
+    points = getattr(track, "points", [])
+    if not points:
+        return None, None
+
+    altitudes = [getattr(p, "altitude", None) for p in points]
+    valid_altitudes = [a for a in altitudes if a is not None]
+
+    if not valid_altitudes:
+        return None, None
+
+    return float(min(valid_altitudes)), float(max(valid_altitudes))
+
+
 def _interpolate_number(start: Optional[float], end: Optional[float], fraction: float) -> Optional[float]:
     """Interpolate a scalar value between two endpoints.
 

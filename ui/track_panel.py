@@ -37,6 +37,7 @@ from core.weather_loader import (
 from core.analyzer import (
     calculate_speed_range,
     calculate_slope_range,
+    calculate_altitude_range,
     track_distance_profile,
     trim_track_by_distance,
 )
@@ -341,7 +342,7 @@ class TrackPanel(QWidget):
                 if my_limits is None or other_limits is None:
                     return None, None
                 my_min, my_max = my_limits
-                other_min, other_max = other_limits # type: ignore
+                other_min, other_max = other_limits
                 
                 minimum = None
                 maximum = None
@@ -382,6 +383,8 @@ class TrackPanel(QWidget):
             return calculate_speed_range(visible_track)
         if mode == "Pendenza":
             return calculate_slope_range(visible_track)
+        if mode == "Altitudine":
+            return calculate_altitude_range(visible_track)
         return None, None
 
     def set_color_mode(self, mode: str):
