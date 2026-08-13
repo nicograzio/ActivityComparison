@@ -37,7 +37,7 @@ class ComparisonControlsPanel(QWidget):
     right_fullscreen_toggled = pyqtSignal(bool)
     highlight_common_segments_toggled = pyqtSignal(bool)
     show_segments_insight_requested = pyqtSignal()
-    show_strava_segments_requested = pyqtSignal()
+    show_strava_segments_requested = pyqtSignal(bool)
 
     def __init__(self):
         """Create the control column and wire button signals.
@@ -97,18 +97,19 @@ class ComparisonControlsPanel(QWidget):
             os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons", "strava.png"
         )
         self.show_strava_segments_button = QPushButton()
-        self.show_strava_segments_button.setObjectName("Segmenti Strava")
-        self.show_strava_segments_button.setProperty("class", "comparisonControlButton")
-        self.show_strava_segments_button.setToolTip("Trova segmenti Strava e confrontali")
-        self.show_strava_segments_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.show_strava_segments_button.setFixedSize(42, 42)
+        self.show_strava_segments_button = self._build_button(
+            "",
+            "Segmenti Strava",
+            "Trova segmenti Strava e mostrali sulle mappe",
+            checkable=True,
+        )
         strava_icon = QIcon(strava_icon_path)
         if not strava_icon.isNull():
             self.show_strava_segments_button.setIcon(strava_icon)
             self.show_strava_segments_button.setIconSize(QSize(32, 32))
         else:
             self.show_strava_segments_button.setText("🏃")
-        self.show_strava_segments_button.clicked.connect(self.show_strava_segments_requested.emit)
+        self.show_strava_segments_button.toggled.connect(self.show_strava_segments_requested.emit)
         layout.addWidget(self.show_strava_segments_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.left_fullscreen_button = self._build_button(
@@ -222,6 +223,14 @@ class ComparisonControlsPanel(QWidget):
         self.show_strava_segments_button.setEnabled(
             enabled and self._fullscreen_mode is None
         )
+
+    def set_strava_segments_checked(self, checked: bool):
+        """Programmatically check or uncheck the Strava segments toggle."""
+        self.show_strava_segments_button.blockSignals(True)
+        try:
+            self.show_strava_segments_button.setChecked(checked)
+        finally:
+            self.show_strava_segments_button.blockSignals(False)
 
     def set_highlight_common_segments_checked(self, checked: bool):
         """Programmatically check or uncheck the highlight toggle.

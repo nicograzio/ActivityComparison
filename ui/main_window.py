@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._highlight_enabled = False
         self._strava_segments = []
         self._strava_occurrences = []
+        self._strava_highlights_enabled = False
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -141,7 +142,7 @@ class MainWindow(QMainWindow):
         self.controls_panel.sync_scales_toggled.connect(self._on_sync_scales_toggled)
         self.controls_panel.highlight_common_segments_toggled.connect(self._on_highlight_common_segments_toggled)
         self.controls_panel.show_segments_insight_requested.connect(self._on_show_segments_insight)
-        self.controls_panel.show_strava_segments_requested.connect(self._on_show_strava_segments)
+        self.controls_panel.show_strava_segments_requested.connect(self._on_strava_segments_toggled)
         self.controls_panel.invert_activities_requested.connect(self._invert_activities)
         self.controls_panel.center_traces_requested.connect(self._center_traces)
         self.controls_panel.toggle_graphs_requested.connect(self._toggle_graphs)
@@ -626,7 +627,18 @@ class MainWindow(QMainWindow):
         self._highlight_enabled = bool(enabled)
         if not self._highlight_enabled:
             self._clear_common_segment_highlights()
+            # Restore Strava button when highlights are off
+            self.controls_panel.show_strava_segments_button.setEnabled(
+                self.left_panel.track is not None or self.right_panel.track is not None
+            )
             return
+
+        # Disable Strava button and clear its highlights when common segments are active
+        self.controls_panel.show_strava_segments_button.setEnabled(False)
+        if self._strava_highlights_enabled:
+            self._clear_strava_segment_highlights()
+            self.controls_panel.set_strava_segments_checked(False)
+            self._strava_highlights_enabled = False
 
         segments = self._compute_common_segments()
         self._common_segments = segments
@@ -645,11 +657,31 @@ class MainWindow(QMainWindow):
         self.controls_panel.set_segments_insight_enabled(True)
 
     def _on_show_segments_insight(self):
-        """Open the insight dialog for the current common segments.
+        """Open the insight dialog for the current common segments or Strava segments.
 
         Called by:
             - ``ComparisonControlsPanel.show_segments_insight_requested``
         """
+        # If Strava highlights are active, the robot button opens the Strava dialog
+        if self._strava_highlights_enabled:
+            if not self._strava_occurrences:
+                QMessageBox.information(
+                    self,
+                    "Segmenti Strava",
+                    "Nessun segmento Strava trovato nelle tracce caricate.",
+                )
+                return
+
+            dialog = StravaSegmentsDialog(
+                self._strava_occurrences,
+                strava_segments=self._strava_segments,
+                parent=self,
+            )
+            dialog.comparison_requested.connect(self._on_strava_comparison_requested)
+            dialog.exec()
+            return
+
+        # Default behavior: Common segments insight
         if not self._common_segments:
             segments = self._compute_common_segments()
             self._common_segments = segments
@@ -690,12 +722,25 @@ class MainWindow(QMainWindow):
         dialog.segment_point_selected.connect(self._on_segment_point_selected)
         dialog.exec()
 
-    def _on_show_strava_segments(self):
-        """Open the Strava segments selection dialog.
+    def _on_strava_segments_toggled(self, enabled: bool):
+        """Handle Strava segments button toggle.
 
         Called by:
             - ``ComparisonControlsPanel.show_strava_segments_requested``
         """
+        self._strava_highlights_enabled = bool(enabled)
+        
+        # Disable common segments button when Strava is active
+        both_loaded = self.left_panel.track is not None and self.right_panel.track is not None
+        self.controls_panel.highlight_common_segments_button.setEnabled(
+            not enabled and both_loaded and self._fullscreen_mode is None
+        )
+
+        if not self._strava_highlights_enabled:
+            self._clear_strava_segment_highlights()
+            self.controls_panel.set_segments_insight_enabled(self._highlight_enabled)
+            return
+
         if not self._strava_segments:
             folder_path = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "..", "Strava_Segments"
@@ -708,6 +753,8 @@ class MainWindow(QMainWindow):
                 "Segmenti Strava",
                 "Nessun segmento Strava disponibile. Inserisci i file GPX nella cartella Strava_Segments.",
             )
+            self.controls_panel.set_strava_segments_checked(False)
+            self._strava_highlights_enabled = False
             return
 
         left_track = self.left_panel.track
@@ -719,6 +766,8 @@ class MainWindow(QMainWindow):
                 "Segmenti Strava",
                 "Carica almeno una traccia per cercare i segmenti Strava.",
             )
+            self.controls_panel.set_strava_segments_checked(False)
+            self._strava_highlights_enabled = False
             return
 
         self._strava_occurrences = []
@@ -737,18 +786,14 @@ class MainWindow(QMainWindow):
                 "Segmenti Strava",
                 "Nessun segmento Strava trovato nelle tracce caricate.",
             )
+            self.controls_panel.set_strava_segments_checked(False)
+            self._strava_highlights_enabled = False
             return
 
         # Highlight found segments on maps
         self._highlight_strava_segments_on_maps()
-
-        dialog = StravaSegmentsDialog(
-            self._strava_occurrences,
-            strava_segments=self._strava_segments,
-            parent=self,
-        )
-        dialog.comparison_requested.connect(self._on_strava_comparison_requested)
-        dialog.exec()
+        # Enable the insight button which now opens the Strava dialog
+        self.controls_panel.set_segments_insight_enabled(True)
 
     def _on_strava_comparison_requested(self, occurrences: list[dict]):
         """Open detailed comparison dialog for two Strava segment occurrences.
@@ -829,6 +874,7 @@ class MainWindow(QMainWindow):
     def _clear_strava_segment_highlights(self):
         """Remove Strava segment highlights from both maps."""
         self._strava_occurrences = []
+        self._strava_highlights_enabled = False
         for panel in (self.left_panel, self.right_panel):
             if panel.map:
                 panel.map.clear_highlighted_segments()
@@ -869,13 +915,22 @@ class MainWindow(QMainWindow):
         right_loaded = self.right_panel.track is not None
         self.controls_panel.set_sync_controls_enabled(both_loaded)
         self.controls_panel.set_fullscreen_buttons_enabled(left_loaded, right_loaded)
-        self.controls_panel.set_strava_segments_enabled(left_loaded or right_loaded)
+        
+        # Strava button is available if at least one track is loaded AND we are not in common segments mode
+        self.controls_panel.set_strava_segments_enabled((left_loaded or right_loaded) and not self._highlight_enabled)
+        
+        # Common segments button should also be disabled if Strava highlights are active
+        if self._strava_highlights_enabled:
+            self.controls_panel.highlight_common_segments_button.setEnabled(False)
+
         if self._fullscreen_mode == "left" and not left_loaded:
             self._apply_fullscreen_mode(None)
         if self._fullscreen_mode == "right" and not right_loaded:
             self._apply_fullscreen_mode(None)
+        
         self._clear_common_segment_highlights()
         self._clear_strava_segment_highlights()
+        self.controls_panel.set_strava_segments_checked(False)
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.
