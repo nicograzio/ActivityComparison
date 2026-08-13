@@ -25,7 +25,6 @@ from ui.strava_segments_dialog import StravaSegmentsDialog
 from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series, find_common_segments
 from core.strava_analyzer import load_strava_segments, find_strava_segments_in_track
 
-
 class MainWindow(QMainWindow):
     """Top-level GUI controller.
 
@@ -166,6 +165,11 @@ class MainWindow(QMainWindow):
         self.shortcut_esc = QShortcut(QKeySequence("Escape"), self)
         self.shortcut_esc.activated.connect(self.showNormal)
 
+        # Inizializza lo stato di tutti i pulsanti di controllo all'avvio:
+        # senza tracce caricate, il pulsante Strava (e gli altri controlli
+        # comparativi) devono essere disabilitati.
+        self._check_sync_controls_availability()
+
     @staticmethod
     def _build_side_splitter(panel, graph):
         """Create a vertical splitter with one activity panel and one graph.
@@ -232,7 +236,8 @@ class MainWindow(QMainWindow):
 
         Side effects:
             Stores the toggle state and copies the first panel view onto the
-            second one when enabled.
+            second one when enabled. Disables the center button while sync is
+            active.
         """
         self._sync_maps_enabled = bool(enabled)
         if self._sync_maps_enabled:
@@ -243,6 +248,7 @@ class MainWindow(QMainWindow):
                 if callable(cancel):
                     cancel()
             self._copy_map_view(self.left_panel, self.right_panel)
+        self._update_center_button_state()
 
     def _copy_map_view(self, source_panel, target_panel):
         """Copy the view state from one panel to the other.
@@ -587,13 +593,19 @@ class MainWindow(QMainWindow):
         splitter.setSizes([650, 300])
 
     def _center_traces(self):
-        """Recompute the visible section for both activities.
- 
+        """Recompute the visible section for the loaded activities.
+
+        With a single track loaded, only that map is centered on its track.
+        With both tracks loaded, both maps are centered on their respective
+        tracks.
+
         Called by:
             - ``ComparisonControlsPanel.center_traces_requested``
         """
-        self.left_panel.refresh_visible_track()
-        self.right_panel.refresh_visible_track()
+        if self.left_panel.track is not None:
+            self.left_panel.refresh_visible_track(fit_bounds=True)
+        if self.right_panel.track is not None:
+            self.right_panel.refresh_visible_track(fit_bounds=True)
  
     def _compute_common_segments(self):
         """Compute common segments between the two loaded tracks.
@@ -627,14 +639,17 @@ class MainWindow(QMainWindow):
         self._highlight_enabled = bool(enabled)
         if not self._highlight_enabled:
             self._clear_common_segment_highlights()
-            # Restore Strava button when highlights are off
-            self.controls_panel.show_strava_segments_button.setEnabled(
+            # Restore Strava button when highlights are off, respecting
+            # the stored track-availability flag and fullscreen state.
+            self.controls_panel.set_strava_segments_enabled(
                 self.left_panel.track is not None or self.right_panel.track is not None
             )
             return
 
-        # Disable Strava button and clear its highlights when common segments are active
-        self.controls_panel.show_strava_segments_button.setEnabled(False)
+        # Disable Strava button and clear its highlights when common segments are active.
+        # Route through set_strava_segments_enabled so the stored availability flag
+        # stays consistent across fullscreen transitions.
+        self.controls_panel.set_strava_segments_enabled(False)
         if self._strava_highlights_enabled:
             self._clear_strava_segment_highlights()
             self.controls_panel.set_strava_segments_checked(False)
@@ -918,6 +933,8 @@ class MainWindow(QMainWindow):
         
         # Strava button is available if at least one track is loaded AND we are not in common segments mode
         self.controls_panel.set_strava_segments_enabled((left_loaded or right_loaded) and not self._highlight_enabled)
+        # At least one track is required for the Strava insight flow
+        self.controls_panel.set_any_track_enabled(left_loaded or right_loaded)
         
         # Common segments button should also be disabled if Strava highlights are active
         if self._strava_highlights_enabled:
@@ -931,6 +948,20 @@ class MainWindow(QMainWindow):
         self._clear_common_segment_highlights()
         self._clear_strava_segment_highlights()
         self.controls_panel.set_strava_segments_checked(False)
+        self._update_center_button_state()
+
+    def _update_center_button_state(self):
+        """Enable the center button when at least one track is loaded and
+        map sync is not active.
+
+        Called by:
+            - ``_check_sync_controls_availability``
+            - ``_on_sync_maps_toggled``
+        """
+        any_loaded = self.left_panel.track is not None or self.right_panel.track is not None
+        self.controls_panel.set_center_button_enabled(
+            any_loaded and not self._sync_maps_enabled
+        )
 
     def _toggle_graphs(self, visible: bool):
         """Show or hide both graph panels.

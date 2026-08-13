@@ -466,15 +466,18 @@ class TrackPanel(QWidget):
             return
         self.apply_scale_mode(ScaleMode.MANUAL, minimum, maximum)
 
-    def refresh_visible_track(self):
+    def refresh_visible_track(self, fit_bounds: bool | None = None):
         """Force a redraw of the visible portion of the track.
 
         Called by:
             - ``MainWindow._center_traces``
-        """
-        self._render_visible_track()
 
-    def _render_visible_track(self):
+        Args:
+            fit_bounds: If True, fit the map to the track bounds.
+        """
+        self._render_visible_track(fit_bounds=fit_bounds)
+
+    def _render_visible_track(self, fit_bounds: bool | None = None):
         """Render the currently visible track portion on the map.
 
         Called by:
@@ -483,6 +486,9 @@ class TrackPanel(QWidget):
             - manual scale edits
             - track import
             - ``refresh_visible_track``
+
+        Args:
+            fit_bounds: If True, fit the map to the track bounds.
 
         Side effects:
             Updates the map, scale fields and emits ``visible_track_changed``.
@@ -499,7 +505,7 @@ class TrackPanel(QWidget):
         else:
             self.min_value.clear()
             self.max_value.clear()
-        self.map.draw_track(visible_track, self._current_mode(), minimum, maximum)
+        self.map.draw_track(visible_track, self._current_mode(), minimum, maximum, fit_bounds=fit_bounds)
         self.visible_track_changed.emit(visible_track)
 
     def _on_scale_limits_edited(self):

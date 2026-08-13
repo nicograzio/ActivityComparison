@@ -20,8 +20,8 @@ Signals emitted:
 """
 
 import os
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QRect
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QFont
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QSizePolicy
 
 
@@ -50,7 +50,11 @@ class ComparisonControlsPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         self._sync_controls_enabled = False
+        self._any_track_enabled = False
         self._fullscreen_mode = None
+        self._strava_track_enabled = False
+        self._segments_insight_enabled = False
+        self._center_button_enabled = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -96,7 +100,6 @@ class ComparisonControlsPanel(QWidget):
         strava_icon_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons", "strava.png"
         )
-        self.show_strava_segments_button = QPushButton()
         self.show_strava_segments_button = self._build_button(
             "",
             "Segmenti Strava",
@@ -106,9 +109,10 @@ class ComparisonControlsPanel(QWidget):
         strava_icon = QIcon(strava_icon_path)
         if not strava_icon.isNull():
             self.show_strava_segments_button.setIcon(strava_icon)
-            self.show_strava_segments_button.setIconSize(QSize(32, 32))
+            self.show_strava_segments_button.setIconSize(QSize(30, 30))
         else:
-            self.show_strava_segments_button.setText("🏃")
+            self.show_strava_segments_button.setIcon(self._emoji_to_icon("🏃"))
+            self.show_strava_segments_button.setIconSize(QSize(30, 30))
         self.show_strava_segments_button.toggled.connect(self.show_strava_segments_requested.emit)
         layout.addWidget(self.show_strava_segments_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -202,16 +206,66 @@ class ComparisonControlsPanel(QWidget):
         self.sync_scales_button.setEnabled(enabled and self._fullscreen_mode is None)
         self.highlight_common_segments_button.setEnabled(enabled and self._fullscreen_mode is None)
         self.invert_button.setEnabled(enabled and self._fullscreen_mode is None)
-        self.center_button.setEnabled(enabled and self._fullscreen_mode is None)
+        self.center_button.setEnabled(
+            self._center_button_enabled and self._fullscreen_mode is None
+        )
+
+    def set_center_button_enabled(self, enabled: bool):
+        """Enable or disable the center button.
+
+        The center button is available when at least one track is loaded and
+        map synchronization is not active.
+
+        Called by:
+            - ``MainWindow._update_center_button_state``
+        """
+        self._center_button_enabled = bool(enabled)
+        self.center_button.setEnabled(
+            self._center_button_enabled and self._fullscreen_mode is None
+        )
+
+    def set_any_track_enabled(self, enabled: bool):
+        """Enable or disable the track-based availability flag.
+
+        This flag tracks whether at least one track is loaded, which is
+        enough for the Strava segments flow. It is distinct from
+        ``_sync_controls_enabled`` which requires both tracks.
+
+        Called by:
+            - ``MainWindow`` when tracks are loaded/unloaded
+        """
+        self._any_track_enabled = bool(enabled)
+        self._update_segments_insight_button()
 
     def set_segments_insight_enabled(self, enabled: bool):
         """Enable or disable the segments insight button.
 
+        The insight button serves two mutually exclusive flows:
+          - common segments (requires both tracks)
+          - Strava segments (requires at least one track)
+
+        The stored request is combined with the track-availability flag so
+        the button state survives ``set_fullscreen_state`` transitions.
+
         Called by:
-            - ``MainWindow`` when common segments are available or cleared.
+            - ``MainWindow`` when common segments or Strava segments are
+              available or cleared.
+        """
+        self._segments_insight_enabled = bool(enabled)
+        self._update_segments_insight_button()
+
+    def _update_segments_insight_button(self):
+        """Apply the stored insight request and track availability to the button.
+
+        Called by:
+            - ``set_any_track_enabled``
+            - ``set_segments_insight_enabled``
+            - ``set_fullscreen_state``
         """
         self.show_segments_insight_button.setEnabled(
-            enabled and self._sync_controls_enabled and self._fullscreen_mode is None
+            self._segments_insight_enabled
+            and self._any_track_enabled
+            and self._fullscreen_mode is None
         )
 
     def set_strava_segments_enabled(self, enabled: bool):
@@ -219,7 +273,13 @@ class ComparisonControlsPanel(QWidget):
 
         Called by:
             ``MainWindow`` when at least one track is loaded.
+
+        Side effects:
+            Stores the track-based availability flag so that
+            ``set_fullscreen_state`` can preserve it while toggling
+            the fullscreen mode.
         """
+        self._strava_track_enabled = bool(enabled)
         self.show_strava_segments_button.setEnabled(
             enabled and self._fullscreen_mode is None
         )
@@ -258,10 +318,10 @@ class ComparisonControlsPanel(QWidget):
         self.sync_maps_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.sync_scales_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
         self.highlight_common_segments_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
-        self.show_segments_insight_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
-        self.show_strava_segments_button.setEnabled(not is_fullscreen)
+        self._update_segments_insight_button()
+        self.show_strava_segments_button.setEnabled(self._strava_track_enabled and not is_fullscreen)
         self.invert_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
-        self.center_button.setEnabled(self._sync_controls_enabled and not is_fullscreen)
+        self.center_button.setEnabled(self._center_button_enabled and not is_fullscreen)
 
         self.left_fullscreen_button.blockSignals(True)
         try:
@@ -275,6 +335,23 @@ class ComparisonControlsPanel(QWidget):
         finally:
             self.right_fullscreen_button.blockSignals(False)
 
+    def _emoji_to_icon(self, emoji: str) -> QIcon:
+        """Render an emoji text into a QIcon to enable automatic grayscale when disabled."""
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        # Use a large enough font to fill the pixmap
+        font = QFont("Segoe UI Emoji") # Common on Windows, falls back to default emoji font
+        font.setPixelSize(48)
+        painter.setFont(font)
+        
+        # Center the emoji in the pixmap
+        painter.drawText(QRect(0, 0, 64, 64), Qt.AlignmentFlag.AlignCenter, emoji)
+        painter.end()
+        
+        return QIcon(pixmap)
+
     def _build_button(self, text: str, label: str, tooltip: str, checkable: bool) -> QPushButton:
         """Create one square button used in the comparison column.
 
@@ -284,7 +361,12 @@ class ComparisonControlsPanel(QWidget):
         Returns:
             QPushButton: Configured control button.
         """
-        button = QPushButton(text)
+        button = QPushButton()
+        if text:
+            # Convert emoji text to an icon so it turns gray when disabled
+            button.setIcon(self._emoji_to_icon(text))
+            button.setIconSize(QSize(30, 30))
+        
         button.setObjectName(label)
         button.setProperty("class", "comparisonControlButton")
         button.setToolTip(tooltip)
