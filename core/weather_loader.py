@@ -4,7 +4,7 @@ Quando un file (FIT/GPX) non contiene informazioni meteo, questo modulo interrog
 il database meteorologico storico di Open-Meteo (gratuito, senza chiave API)
 usando coordinate GPS e timestamp del primo e dell'ultimo punto della traccia.
 
-In caso di errore di rete, dati assenti o date non coprite dal servizio,
+In caso di errore di rete, dati assenti o date non coperte dal servizio,
 restituisce ``None`` senza generare eccezioni: la UI mostrerà l'icona rossa.
 
 Consumes:

@@ -235,6 +235,12 @@ class MainWindow(QMainWindow):
         """
         self._sync_maps_enabled = bool(enabled)
         if self._sync_maps_enabled:
+            # Cancel any pending one-shot fit so a delayed initial fit (if the
+            # maps were still loading) can never move the just-synced maps.
+            for panel in (self.left_panel, self.right_panel):
+                cancel = getattr(panel.map, "cancel_pending_fit", None)
+                if callable(cancel):
+                    cancel()
             self._copy_map_view(self.left_panel, self.right_panel)
 
     def _copy_map_view(self, source_panel, target_panel):

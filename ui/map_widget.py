@@ -25,10 +25,15 @@ from core.colorizer import value_to_color
 
 class _MapViewBridge(QObject):
     viewChanged = pyqtSignal(dict)
+    viewApplied = pyqtSignal()
 
     @pyqtSlot("QVariant")
     def onViewChanged(self, state):
         self.viewChanged.emit(state)
+
+    @pyqtSlot()
+    def onViewApplied(self):
+        self.viewApplied.emit()
 
 
 class MapWidget(QWidget):
@@ -49,10 +54,15 @@ class MapWidget(QWidget):
 
         self._bridge = _MapViewBridge()
         self._bridge.viewChanged.connect(self._emit_view_changed)
+        self._bridge.viewApplied.connect(self._on_view_applied)
         self._channel = QWebChannel(self)
         self._channel.registerObject("bridge", self._bridge)
 
-        self._ignore_next_view_change = False
+        # Pending programmatic view state awaiting its echo from the JS side.
+        # The echo is suppressed in JS via __ignoreViewEvent; onViewApplied()
+        # clears this once the JS side has finished suppressing it.
+        self._view_pending = False
+        self._pending_view_state: dict[str, Any] | None = None
 
         # Current hovered point for map synchronization
         self._current_hovered_point = None
@@ -75,11 +85,20 @@ class MapWidget(QWidget):
         self._update_map(None)
 
     def _emit_view_changed(self, state):
-        if self._ignore_next_view_change:
-            self._ignore_next_view_change = False
+        # Swallow only the echo of a programmatic set_view_state. Any other
+        # view change (user pan/zoom) is always propagated.
+        if self._view_pending and state == self._pending_view_state:
+            self._view_pending = False
+            self._pending_view_state = None
             return
         self._last_view_state = state
         self.viewChanged.emit(state)
+
+    def _on_view_applied(self):
+        """Clear the pending programmatic view state once the JS side has
+        finished suppressing the echo of setViewState."""
+        self._view_pending = False
+        self._pending_view_state = None
 
     def _on_load_finished(self, ok: bool):
         if ok:
@@ -143,6 +162,10 @@ class MapWidget(QWidget):
                     map.on('moveend', function() {
                         if (window.__ignoreViewEvent && window.__ignoreViewEvent > 0) {
                             window.__ignoreViewEvent -= 1;
+                            if (window.__ignoreViewEvent === 0 &&
+                                window.python_bridge && window.python_bridge.onViewApplied) {
+                                window.python_bridge.onViewApplied();
+                            }
                             return;
                         }
 
@@ -166,6 +189,13 @@ class MapWidget(QWidget):
 
                     window.setViewState = function(state) {
                         if (state && state.center) {
+                            var cur = map.getCenter();
+                            var sameCenter = Math.abs(cur.lat - state.center[0]) < 1e-9 &&
+                                             Math.abs(cur.lng - state.center[1]) < 1e-9;
+                            var sameZoom = map.getZoom() === state.zoom;
+                            if (sameCenter && sameZoom) {
+                                return;
+                            }
                             window.__ignoreViewEvent += 1;
                             map.setView(state.center, state.zoom, {animate: false});
                         }
@@ -366,15 +396,13 @@ class MapWidget(QWidget):
 
         Ottimizzato per ridurre il carico di calcolo durante la preparazione dei dati JSON.
         """
+        if fit_bounds is None:
+            fit_bounds = self._fit_next_draw
+            self._fit_next_draw = False
+
         if not self._ready:
             self._pending_draw = (track, color_mode, minimum, maximum, fit_bounds)
             return
-
-        if fit_bounds is None:
-            fit_bounds = self._fit_next_draw
-
-        if fit_bounds:
-            self._fit_next_draw = False
 
         points = getattr(track, "points", None) or []
         if not points:
@@ -460,7 +488,8 @@ class MapWidget(QWidget):
                 callback(None)
             return
 
-        self._ignore_next_view_change = True
+        self._view_pending = True
+        self._pending_view_state = normalized
         js_state = json.dumps(normalized)
 
         def _on_set_done(result=None):
@@ -474,6 +503,19 @@ class MapWidget(QWidget):
                 _on_set_done,
             )
         self._last_view_state = normalized
+
+    def cancel_pending_fit(self):
+        """Cancel any pending one-shot fit-to-bounds.
+
+        Called by:
+            - ``MainWindow`` when enabling map sync, so a delayed initial fit
+              (if the maps were still loading) can never move the just-synced
+              maps.
+        """
+        self._fit_next_draw = False
+        if self._pending_draw is not None:
+            track, color_mode, minimum, maximum, fit_bounds = self._pending_draw
+            self._pending_draw = (track, color_mode, minimum, maximum, False)
 
     def set_hovered_point(self, point_index: int):
         """Update the hovered point marker on the map.

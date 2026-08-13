@@ -7,7 +7,7 @@ L'algoritmo di map-matching è ispirato al classico schema Strava
 "aggancio inizio → aggancio fine con controllo direzionale → verifica lineare
 dei punti intermedi", ottimizzato per:
 
-- tolleranza GPS (default 15 m) compensata con la distanza di Haversine;
+- tolleranza GPS (default 25 m) compensata con la distanza di Haversine;
 - densità di campionamento diverse tra segmento e traccia (GPX registrati
   da dispositivi con frequenze differenti);
 - rumore e piccole derive della traccia (salto di punti con gap tollerati);
@@ -222,16 +222,28 @@ def _walk_forward(
                 break
             continue
 
+        # Prova i candidati a partire da k, scegliendo il primo che supera
+        # il controllo di progresso. Questo gestisce tratti densa del segmento
+        # dove più punti mappano sullo stesso punto di traccia e il salto
+        # successivo potrebbe superare la soglia con il primo candidato.
+        matched = False
         track_i = int(cand[k])
-        if prev_seg is not None and prev_track is not None:
-            d_seg = segment_profile[seg_i] - segment_profile[prev_seg]
-            d_track = track_profile[track_i] - track_profile[prev_track]
-            if d_track > max(d_seg * progress_ratio, d_seg + progress_slack_m):
-                # Salti sproporzionati (es. rami paralleli) non sono match.
-                skipped += 1
-                if skipped > max_gap:
-                    break
-                continue
+        for j in range(k, len(cand)):
+            track_i = int(cand[j])
+            if prev_seg is not None and prev_track is not None:
+                d_seg = segment_profile[seg_i] - segment_profile[prev_seg]
+                d_track = track_profile[track_i] - track_profile[prev_track]
+                if d_track > max(d_seg * progress_ratio, d_seg + progress_slack_m):
+                    # Salti sproporzionati (es. rami paralleli) non sono match.
+                    continue
+            matched = True
+            break
+
+        if not matched:
+            skipped += 1
+            if skipped > max_gap:
+                break
+            continue
 
         chain.append((seg_i, track_i))
         prev_seg = seg_i
@@ -357,7 +369,7 @@ def _find_occurrences(
 def find_strava_segments_in_track(
     strava_segments: List[dict],
     track: Track,
-    distance_threshold_m: float = 15.0,
+    distance_threshold_m: float = 25.0,
     min_match_points: int = 5,
 ) -> List[dict]:
     """Individua i segmenti Strava all'interno di una traccia caricata.
@@ -409,6 +421,75 @@ def find_strava_segments_in_track(
         )
 
         for reverse, t0, t1, length_m, chain in occurrences:
+            # Raffinamento endpoint a distanza-traccia limitata.
+            # Se la catena non copre l'intero segmento (es. una serpentina
+            # all'inizio o una deviazione alla fine del match), si cercano i
+            # punti di traccia più vicini (Haversine) al vero inizio/fine del
+            # segmento, ma SOLO entro una distanza-traccia proporzionale alla
+            # parte di segmento mancante. Questo evita di entrare in rami
+            # lenti o serpentine che gonfierebbero il tempo cronometrato.
+            chain_seg0 = chain[0][0]
+            chain_segN = chain[-1][0]
+            seg_len_m = segment_profile[-1]
+            if reverse:
+                orig0 = n_seg - 1 - chain_seg0
+                origN = n_seg - 1 - chain_segN
+                missing_start_seg = segment_profile[orig0]
+                missing_end_seg = seg_len_m - segment_profile[origN]
+            else:
+                missing_start_seg = segment_profile[chain_seg0]
+                missing_end_seg = seg_len_m - segment_profile[chain_segN]
+
+            seg_start_lat = segment_track.points[0].latitude
+            seg_start_lon = segment_track.points[0].longitude
+            seg_end_lat = segment_track.points[-1].latitude
+            seg_end_lon = segment_track.points[-1].longitude
+
+            t0_chain = min(ti for _, ti in chain)
+            t1_chain = max(ti for _, ti in chain)
+
+            # Cerca indietro dal primo indice della catena entro il limite
+            # di distanza-traccia per la parte di segmento mancante all'inizio.
+            track_slack = 30.0
+            limit_start = missing_start_seg * 1.5 + track_slack
+            best_start_dist = float('inf')
+            best_start_idx = t0_chain
+            ti = t0_chain
+            track_back = 0.0
+            while ti >= 0 and track_back <= limit_start:
+                d = _haversine_to_points(
+                    seg_start_lat, seg_start_lon,
+                    np.array([track.latitudes[ti]]), np.array([track.longitudes[ti]])
+                )[0]
+                if d < best_start_dist:
+                    best_start_dist = d
+                    best_start_idx = ti
+                if ti > 0:
+                    track_back += abs(track_profile[ti] - track_profile[ti - 1])
+                ti -= 1
+
+            # Cerca avanti dall'ultimo indice della catena entro il limite
+            # di distanza-traccia per la parte di segmento mancante in coda.
+            limit_end = missing_end_seg * 1.5 + track_slack
+            best_end_dist = float('inf')
+            best_end_idx = t1_chain
+            ti = t1_chain
+            track_fwd = 0.0
+            while ti < len(track.points) - 1 and track_fwd <= limit_end:
+                d = _haversine_to_points(
+                    seg_end_lat, seg_end_lon,
+                    np.array([track.latitudes[ti]]), np.array([track.longitudes[ti]])
+                )[0]
+                if d < best_end_dist:
+                    best_end_dist = d
+                    best_end_idx = ti
+                if ti < len(track.points) - 1:
+                    track_fwd += abs(track_profile[ti + 1] - track_profile[ti])
+                ti += 1
+
+            t0 = min(best_start_idx, best_end_idx)
+            t1 = max(best_start_idx, best_end_idx)
+            length_m = track_profile[t1] - track_profile[t0]
             sub_pts = track.points[t0 : t1 + 1]
 
             time_sec = None

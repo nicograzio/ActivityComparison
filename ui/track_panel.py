@@ -1394,7 +1394,6 @@ class TrackPanel(QWidget):
             self.visible_end_m = self.full_distance_m
             self.map._fit_next_draw = True
             self.update_trim(0, slider_max)
-            self._render_visible_track()
             self.activity_loaded.emit(self.track)
         except Exception as error:
             QMessageBox.critical(self, "Errore caricamento", str(error))
