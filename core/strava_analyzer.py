@@ -390,7 +390,7 @@ def find_strava_segments_in_track(
         ``track_name``, ``track``, ``start_idx``, ``end_idx``,
         ``start_dist_m``, ``end_dist_m``, ``length_m``, ``time_sec``,
         ``avg_speed``, ``avg_alt``, ``avg_hr``, ``slope``, ``coords``,
-        ``direction``, ``n_match_points``).
+        ``direction``, ``n_match_points``, ``segment_point_count``).
     """
     if not track or not track.points or len(track.points) < 2:
         return []
@@ -531,6 +531,7 @@ def find_strava_segments_in_track(
                     "coords": coords,
                     "direction": "reverse" if reverse else "forward",
                     "n_match_points": len(chain),
+                    "segment_point_count": n_seg,
                 }
             )
 

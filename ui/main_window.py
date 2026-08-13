@@ -742,7 +742,11 @@ class MainWindow(QMainWindow):
         # Highlight found segments on maps
         self._highlight_strava_segments_on_maps()
 
-        dialog = StravaSegmentsDialog(self._strava_occurrences, parent=self)
+        dialog = StravaSegmentsDialog(
+            self._strava_occurrences,
+            strava_segments=self._strava_segments,
+            parent=self,
+        )
         dialog.comparison_requested.connect(self._on_strava_comparison_requested)
         dialog.exec()
 
@@ -777,6 +781,10 @@ class MainWindow(QMainWindow):
             "avg_speed_b": occ2.get("avg_speed"),
             "slope_a": occ1.get("slope"),
             "slope_b": occ2.get("slope"),
+            "avg_hr_a": occ1.get("avg_hr"),
+            "avg_hr_b": occ2.get("avg_hr"),
+            "avg_alt_a": occ1.get("avg_alt"),
+            "avg_alt_b": occ2.get("avg_alt"),
         }
 
         dialog = InsightDialog(

@@ -755,13 +755,22 @@ def find_common_segments(
     return result
 
 
+def _collect_floats(segments: List[dict], key: str) -> List[float]:
+    """Estrae i valori numerici non-None associati a ``key`` da una lista di segmenti.
+
+    Gestisce sia chiavi mancanti (KeyError) sia valori None in modo sicuro,
+    restituendo solo i valori float validi. Utile per np.mean() e simili.
+    """
+    return [float(v) for v in (s.get(key) for s in segments) if v is not None]
+
+
 def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attività A", name_b: str = "Attività B") -> List[str]:
     """Genera consigli intelligenti del Coach basandosi sulle differenze nei segmenti comuni."""
     if not segments:
         return ["Nessun segmento comune rilevato per elaborare suggerimenti del Coach."]
 
     insights = []
-    total_length = sum(s["length_m"] for s in segments) / 1000.0
+    total_length = sum(s.get("length_m", 0) for s in segments) / 1000.0
 
     # --- Panoramica generale ---
     insights.append(
@@ -769,8 +778,8 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
     )
 
     # --- Confronto velocita ---
-    valid_speeds_a = [s["avg_speed_a"] for s in segments if s["avg_speed_a"] is not None]
-    valid_speeds_b = [s["avg_speed_b"] for s in segments if s["avg_speed_b"] is not None]
+    valid_speeds_a = _collect_floats(segments, "avg_speed_a")
+    valid_speeds_b = _collect_floats(segments, "avg_speed_b")
 
     mean_spd_a = 0.0
     mean_spd_b = 0.0
@@ -790,8 +799,8 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
             insights.append("⚖️ <b>Ritmo omogeneo:</b> La velocità media complessiva sui tratti comuni è quasi identica tra le due prestazioni.")
 
     # --- Analisi FC vs Velocita ---
-    valid_hrs_a = [s["avg_hr_a"] for s in segments if s["avg_hr_a"] is not None]
-    valid_hrs_b = [s["avg_hr_b"] for s in segments if s["avg_hr_b"] is not None]
+    valid_hrs_a = _collect_floats(segments, "avg_hr_a")
+    valid_hrs_b = _collect_floats(segments, "avg_hr_b")
 
     if valid_hrs_a and valid_hrs_b and valid_speeds_a and valid_speeds_b:
         mean_hr_a = float(np.mean(valid_hrs_a))
@@ -807,11 +816,11 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
             insights.append(f"⚠️ <b>Segnale di Affaticamento:</b> In {name_b} la velocità è stata inferiore nonostante una frequenza cardiaca più alta (+{diff_hr:.0f} bpm). Potrebbe indicare stanchezza accumulata o condizioni meteo avverse.")
 
     # --- Confronto salite ---
-    climb_segments = [s for s in segments if (s["slope_a"] and s["slope_a"] > 2.0) or (s["slope_b"] and s["slope_b"] > 2.0)]
+    climb_segments = [s for s in segments if (s.get("slope_a") or 0) > 2.0 or (s.get("slope_b") or 0) > 2.0]
 
     if climb_segments:
-        spd_climb_a = [s["avg_speed_a"] for s in climb_segments if s["avg_speed_a"]]
-        spd_climb_b = [s["avg_speed_b"] for s in climb_segments if s["avg_speed_b"]]
+        spd_climb_a = _collect_floats(climb_segments, "avg_speed_a")
+        spd_climb_b = _collect_floats(climb_segments, "avg_speed_b")
         if spd_climb_a and spd_climb_b:
             diff_climb = np.mean(spd_climb_b) - np.mean(spd_climb_a)
             if diff_climb > 0.5:
@@ -821,9 +830,9 @@ def generate_segment_coach_insights(segments: List[dict], name_a: str = "Attivit
 
     # --- Segmento con maggiore guadagno ---
     if len(segments) > 1 and valid_speeds_a and valid_speeds_b:
-        best_seg_b = max(segments, key=lambda s: (s["avg_speed_b"] or 0) - (s["avg_speed_a"] or 0))
+        best_seg_b = max(segments, key=lambda s: (s.get("avg_speed_b") or 0) - (s.get("avg_speed_a") or 0))
         insights.append(
-            f"🎯 <b>Miglior Segmento:</b> Nel <b>Segmento {best_seg_b['id']}</b> (km {best_seg_b['a_start_dist_m']/1000:.2f}) hai registrato il massimo guadagno prestazionale!"
+            f"🎯 <b>Miglior Segmento:</b> Nel <b>Segmento {best_seg_b.get('id', '?')}</b> (km {best_seg_b.get('a_start_dist_m', 0)/1000:.2f}) hai registrato il massimo guadagno prestazionale!"
         )
 
     # --- Analisi per segmento ---
