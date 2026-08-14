@@ -25,6 +25,40 @@ import numpy as np
 from core.analyzer import track_distance_profile
 from core.track import Track, TrackPoint
 
+# =============================================================================
+# PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI (STILE STRAVA)
+# =============================================================================
+# Tolleranza GPS in metri per agganciare un punto della traccia al segmento.
+DISTANCE_THRESHOLD_M = 40.0
+
+# Numero minimo di punti del segmento che devono coincidere con la traccia.
+MIN_MATCH_POINTS = 5
+
+# Tolleranza sulle code (inizio/fine) in percentuale rispetto ai punti totali del segmento.
+# Strava permette di non agganciare esattamente il primo/ultimo punto se si è vicini.
+END_TOL_RATIO = 0.15
+
+# Numero massimo di punti consecutivi del segmento che possono essere saltati (gap).
+# Espresso in percentuale rispetto al numero totale di punti del segmento.
+MAX_GAP_RATIO = 0.08
+
+# Distanza minima (in indici di traccia) tra due cluster spaziali distinti
+# dei candidati, usata per individuare più passaggi dello stesso segmento
+# nella semina delle ancore di inizio (loop / out-and-back / rientri).
+CLUSTER_GAP_IDX = 25
+
+# Parametri di plausibilità del progresso (evita rami paralleli o inversioni a U).
+PROGRESS_RATIO = 2.5
+PROGRESS_SLACK_M = 30.0
+
+# Rapporti tra lunghezza traccia trovata e lunghezza segmento originale.
+# Utili per scartare match parziali o giri immotivatamente lunghi (loop extra).
+MIN_DENSITY = 0.3
+MAX_DENSITY = 2.2
+
+# Lunghezza minima in metri per considerare un'occorrenza valida.
+MIN_LENGTH_M = 20.0
+# =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
 
@@ -54,6 +88,77 @@ def _haversine_to_points(
     )
     np.clip(a, 0.0, 1.0, out=a)
     return _EARTH_RADIUS_M * 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+
+
+def _project_point_on_segment(
+    lat_p: float, lon_p: float, lat_a: float, lon_a: float, lat_b: float, lon_b: float
+) -> float:
+    """Proietta il punto P sul segmento AB e restituisce la frazione r [0, 1].
+
+    Utilizza una proiezione piana locale, sufficientemente precisa per distanze
+    brevissime (metri) tipiche dell'aggancio GPS ai capi del segmento.
+    """
+    lat_avg = np.radians(lat_a)
+    cos_lat = np.cos(lat_avg)
+
+    # Vettore AB (direzione traccia)
+    dlat_ab = lat_b - lat_a
+    dlon_ab = (lon_b - lon_a) * cos_lat
+
+    # Vettore AP (distanza punto dal segmento)
+    dlat_ap = lat_p - lat_a
+    dlon_ap = (lon_p - lon_a) * cos_lat
+
+    denom = dlat_ab**2 + dlon_ab**2
+    if denom < 1e-15:
+        return 0.0
+
+    r = (dlat_ap * dlat_ab + dlon_ap * dlon_ab) / denom
+    return float(np.clip(r, 0.0, 1.0))
+
+
+def _find_best_track_projection(
+    track: Track, target_lat: float, target_lon: float, center_idx: int, window: int = 15
+) -> Tuple[int, float]:
+    """Cerca il miglior segmento di traccia su cui proiettare un punto.
+
+    Args:
+        track: La traccia dell'utente.
+        target_lat/lon: Coordinate del punto del segmento (es. inizio/fine).
+        center_idx: Indice indicativo vicino a dove cercare (da chain).
+        window: Ampiezza della finestra di ricerca.
+
+    Returns:
+        Tuple (indice_track_a, frazione_r).
+    """
+    best_dist = float("inf")
+    best_k = center_idx
+    best_r = 0.0
+
+    start_k = max(0, center_idx - window)
+    end_k = min(len(track.points) - 2, center_idx + window)
+
+    for k in range(start_k, end_k + 1):
+        pa = track.points[k]
+        pb = track.points[k + 1]
+
+        r = _project_point_on_segment(
+            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
+        )
+
+        # Coordinate del punto proiettato
+        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
+        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
+
+        # Distanza Haversine tra target e proiezione
+        d = _haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0]
+
+        if d < best_dist:
+            best_dist = d
+            best_k = k
+            best_r = r
+
+    return best_k, best_r
 
 
 def load_strava_segments(folder_path: str) -> List[dict]:
@@ -287,15 +392,15 @@ def _find_occurrences(
     candidates: List[np.ndarray],
     track_profile: List[float],
     segment_profile: List[float],
-    min_match_points: int,
-    start_tol: int,
-    end_tol: int,
-    max_gap: int,
-    progress_ratio: float = 2.5,
-    progress_slack_m: float = 30.0,
-    min_length_m: float = 20.0,
-    min_density: float = 0.4,
-    max_density: float = 2.2,
+    min_match_points: int = MIN_MATCH_POINTS,
+    start_tol: int = 5,
+    end_tol: int = 5,
+    max_gap: int = 10,
+    progress_ratio: float = PROGRESS_RATIO,
+    progress_slack_m: float = PROGRESS_SLACK_M,
+    min_length_m: float = MIN_LENGTH_M,
+    min_density: float = MIN_DENSITY,
+    max_density: float = MAX_DENSITY,
     max_total_passes: int = 12,
 ) -> List[Tuple[bool, int, int, float, List[Tuple[int, int]]]]:
     """Trova tutte le occorrenze del segmento nella traccia.
@@ -332,10 +437,26 @@ def _find_occurrences(
             masked = _masked_candidates(candidates, used, reverse)
             profile = _reversed_profile(segment_profile) if reverse else segment_profile
 
-            # Ancore di inizio: primi candidati distinti dei punti d'inizio.
+            # Ancore di inizio: per ogni punto d'inizio del segmento vengono
+            # seminate le prime ancore di CIASCUN cluster spaziale di candidati
+            # (cluster separati da un gap di indici > CLUSTER_GAP_IDX). Questo
+            # permette di rilevare passaggi che iniziano su un cluster diverso
+            # dal primo (es. rientro dopo un giro/strada laterale) anche quando
+            # la densità di campionamento è alta (come nei file FIT).
             anchor_pool: List[int] = []
             for i in range(min(start_tol + 1, n_seg)):
-                anchor_pool.extend(int(x) for x in masked[i][:10])
+                arr = masked[i]
+                if len(arr) == 0:
+                    continue
+                anchor_pool.append(int(arr[0]))
+                prev = int(arr[0])
+                for j in range(1, len(arr)):
+                    x = int(arr[j])
+                    if x - prev > CLUSTER_GAP_IDX:
+                        # Nuovo cluster: semina le prime ancore di questo gruppo.
+                        for k in range(j, min(j + 5, len(arr))):
+                            anchor_pool.append(int(arr[k]))
+                    prev = x
             anchors = list(dict.fromkeys(anchor_pool))
 
             found = False
@@ -369,8 +490,8 @@ def _find_occurrences(
 def find_strava_segments_in_track(
     strava_segments: List[dict],
     track: Track,
-    distance_threshold_m: float = 25.0,
-    min_match_points: int = 5,
+    distance_threshold_m: float = DISTANCE_THRESHOLD_M,
+    min_match_points: int = MIN_MATCH_POINTS,
 ) -> List[dict]:
     """Individua i segmenti Strava all'interno di una traccia caricata.
 
@@ -407,8 +528,8 @@ def find_strava_segments_in_track(
         candidates = _candidate_track_indices(track, segment_track, distance_threshold_m)
         segment_profile, _ = track_distance_profile(segment_track)
 
-        end_tol = max(2, int(0.10 * n_seg))
-        max_gap = max(6, int(0.08 * n_seg))
+        end_tol = max(2, int(END_TOL_RATIO * n_seg))
+        max_gap = max(6, int(MAX_GAP_RATIO * n_seg))
 
         occurrences = _find_occurrences(
             candidates,
@@ -418,82 +539,63 @@ def find_strava_segments_in_track(
             start_tol=end_tol,
             end_tol=end_tol,
             max_gap=max_gap,
+            progress_ratio=PROGRESS_RATIO,
+            progress_slack_m=PROGRESS_SLACK_M,
+            min_length_m=MIN_LENGTH_M,
+            min_density=MIN_DENSITY,
+            max_density=MAX_DENSITY,
         )
 
-        for reverse, t0, t1, length_m, chain in occurrences:
-            # Raffinamento endpoint a distanza-traccia limitata.
-            # Se la catena non copre l'intero segmento (es. una serpentina
-            # all'inizio o una deviazione alla fine del match), si cercano i
-            # punti di traccia più vicini (Haversine) al vero inizio/fine del
-            # segmento, ma SOLO entro una distanza-traccia proporzionale alla
-            # parte di segmento mancante. Questo evita di entrare in rami
-            # lenti o serpentine che gonfierebbero il tempo cronometrato.
-            chain_seg0 = chain[0][0]
-            chain_segN = chain[-1][0]
-            seg_len_m = segment_profile[-1]
-            if reverse:
-                orig0 = n_seg - 1 - chain_seg0
-                origN = n_seg - 1 - chain_segN
-                missing_start_seg = segment_profile[orig0]
-                missing_end_seg = seg_len_m - segment_profile[origN]
+        for reverse, t0_raw, t1_raw, length_m_raw, chain in occurrences:
+            # Determinazione punti geografici reali di inizio/fine del segmento
+            # (rispettando la direzione rilevata).
+            if not reverse:
+                seg_start_lat = segment_track.points[0].latitude
+                seg_start_lon = segment_track.points[0].longitude
+                seg_end_lat = segment_track.points[-1].latitude
+                seg_end_lon = segment_track.points[-1].longitude
             else:
-                missing_start_seg = segment_profile[chain_seg0]
-                missing_end_seg = seg_len_m - segment_profile[chain_segN]
-
-            seg_start_lat = segment_track.points[0].latitude
-            seg_start_lon = segment_track.points[0].longitude
-            seg_end_lat = segment_track.points[-1].latitude
-            seg_end_lon = segment_track.points[-1].longitude
+                seg_start_lat = segment_track.points[-1].latitude
+                seg_start_lon = segment_track.points[-1].longitude
+                seg_end_lat = segment_track.points[0].latitude
+                seg_end_lon = segment_track.points[0].longitude
 
             t0_chain = min(ti for _, ti in chain)
             t1_chain = max(ti for _, ti in chain)
 
-            # Cerca indietro dal primo indice della catena entro il limite
-            # di distanza-traccia per la parte di segmento mancante all'inizio.
-            track_slack = 30.0
-            limit_start = missing_start_seg * 1.5 + track_slack
-            best_start_dist = float('inf')
-            best_start_idx = t0_chain
-            ti = t0_chain
-            track_back = 0.0
-            while ti >= 0 and track_back <= limit_start:
-                d = _haversine_to_points(
-                    seg_start_lat, seg_start_lon,
-                    np.array([track.latitudes[ti]]), np.array([track.longitudes[ti]])
-                )[0]
-                if d < best_start_dist:
-                    best_start_dist = d
-                    best_start_idx = ti
-                if ti > 0:
-                    track_back += abs(track_profile[ti] - track_profile[ti - 1])
-                ti -= 1
+            # INTERPOLAZIONE LINEARE (Stile Strava)
+            # Cerchiamo il miglior segmento della traccia su cui proiettare
+            # l'inizio e la fine teorica del segmento Strava.
+            k_start, r_start = _find_best_track_projection(
+                track, seg_start_lat, seg_start_lon, t0_chain, window=15
+            )
+            k_end, r_end = _find_best_track_projection(
+                track, seg_end_lat, seg_end_lon, t1_chain, window=15
+            )
 
-            # Cerca avanti dall'ultimo indice della catena entro il limite
-            # di distanza-traccia per la parte di segmento mancante in coda.
-            limit_end = missing_end_seg * 1.5 + track_slack
-            best_end_dist = float('inf')
-            best_end_idx = t1_chain
-            ti = t1_chain
-            track_fwd = 0.0
-            while ti < len(track.points) - 1 and track_fwd <= limit_end:
-                d = _haversine_to_points(
-                    seg_end_lat, seg_end_lon,
-                    np.array([track.latitudes[ti]]), np.array([track.longitudes[ti]])
-                )[0]
-                if d < best_end_dist:
-                    best_end_dist = d
-                    best_end_idx = ti
-                if ti < len(track.points) - 1:
-                    track_fwd += abs(track_profile[ti + 1] - track_profile[ti])
-                ti += 1
+            # Calcolo dei timestamp precisi (frazionari)
+            def _get_interp_time(k: int, r: float) -> Optional[float]:
+                ta = track.points[k].timestamp
+                tb = track.points[k + 1].timestamp
+                if not ta or not tb:
+                    return None
+                return ta.timestamp() + r * (tb - ta).total_seconds()
 
-            t0 = min(best_start_idx, best_end_idx)
-            t1 = max(best_start_idx, best_end_idx)
+            ts_start = _get_interp_time(k_start, r_start)
+            ts_end = _get_interp_time(k_end, r_end)
+
+            time_sec = None
+            if ts_start is not None and ts_end is not None:
+                time_sec = abs(ts_end - ts_start)
+
+            # Indici discreti per l'estrazione dei dati (HR, Altitudine, ecc.)
+            t0 = min(k_start, k_end)
+            t1 = max(k_start + 1, k_end + 1)
             length_m = track_profile[t1] - track_profile[t0]
             sub_pts = track.points[t0 : t1 + 1]
 
-            time_sec = None
-            if sub_pts[0].timestamp and sub_pts[-1].timestamp:
+            # Se l'interpolazione fallisce, usiamo i timestamp discreti
+            if time_sec is None and sub_pts[0].timestamp and sub_pts[-1].timestamp:
                 time_sec = (sub_pts[-1].timestamp - sub_pts[0].timestamp).total_seconds()
 
             speeds = [p.speed * 3.6 for p in sub_pts if p.speed is not None]

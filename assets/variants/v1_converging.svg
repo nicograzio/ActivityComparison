@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Background rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="#2C3E50"/>
+
+  <!-- Track A (orange) - starts top-left, converges to center -->
+  <path d="M 96 128
+           C 160 96, 200 160, 240 200
+           C 280 240, 300 260, 320 280
+           C 340 300, 360 320, 384 352"
+        fill="none" stroke="#E67E22" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- Track B (blue) - starts bottom-left, converges to center -->
+  <path d="M 96 384
+           C 160 416, 200 352, 240 312
+           C 280 272, 300 252, 320 232
+           C 340 212, 360 192, 384 160"
+        fill="none" stroke="#3498DB" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- Common segment (green) - the meeting point -->
+  <path d="M 384 352
+           C 400 340, 416 320, 432 296
+           C 440 280, 448 264, 448 256"
+        fill="none" stroke="#27AE60" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- Start point A (orange dot) -->
+  <circle cx="96" cy="128" r="18" fill="#E67E22"/>
+
+  <!-- Start point B (blue dot) -->
+  <circle cx="96" cy="384" r="18" fill="#3498DB"/>
+
+  <!-- Meeting point (green dot) -->
+  <circle cx="448" cy="256" r="18" fill="#27AE60"/>
+</svg>

@@ -1,4 +1,4 @@
-"""Main window orchestration for ActivityComparison.
+"""Main window orchestration for DuoTrack.
 
 This module wires together the two activity panels, the comparison control
 column, the graph panels and the map synchronization logic.
@@ -52,7 +52,7 @@ class MainWindow(QMainWindow):
             Creates the central widgets and connects all UI signals.
         """
         super().__init__()
-        self.setWindowTitle("Activity Comparison")
+        self.setWindowTitle("DuoTrack")
         self._sync_maps_enabled = False
         self._syncing_maps = False
         self._sync_scales_enabled = False

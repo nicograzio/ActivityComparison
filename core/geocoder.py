@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple
 import requests
 
 _USER_AGENT = (
-    "ActivityComparison/1.0 "
+    "DuoTrack/1.0 "
     "(https://github.com/nicograzio/ActivityComparison; contact: local user)"
 )
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
