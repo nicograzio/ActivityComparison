@@ -1,0 +1,53 @@
+Pedalata_pomeridiana_12082026.gpx:
+- Monelline 2:28
+- BePa UP TRAIL 19:01
+- Monelline 2:08
+
+Pedalata_serale_11082026.gpx:
+- Monelline 2:08
+
+Pedalata_pomeridiana_05082026.gpx:
+- TerminatoR 2:55
+- Pistino Etilico 2:36
+
+Pedalata_serale_03082026.gpx:
+- Vertical Trail 2:16
+
+Pedalata_mattutina_01082026.gpx:
+- Monelline 2:12
+- BePa UP TRAIL 16:02
+- TerminatoR 14:27
+- Pistino Etilico 7:27
+
+Pedalata_pomeridiana_29072026.gpx:
+- Pistino Etilico 2:30
+- BePa UP TRAIL 15:31
+- Monelline 2:09
+- BePa UP TRAIL 16:07
+- Vertical Trail 2:12
+
+Pedalata_pomeridiana_28072026.gpx:
+- Monelline 2:04
+- BePa UP TRAIL 17:02
+- Monelline 2:01
+
+Pedalata_pomeridiana_26072026.gpx:
+- Pistino Etilico 2:34
+- BePa UP TRAIL 14:20
+- Monelline 2:03
+- BePa UP TRAIL 17:45
+- Vertical Trail 2:25
+
+Pedalata_serale_23072026.gpx:
+- Pistino Etilico 2:40
+- BePa UP TRAIL 14:55
+- TerminatoR 4:23
+- Pistino Etilico 2:35
+
+strava_full.gpx:
+- Monelline 1:53
+- Monelline 1:52
+
+Pedalata_pomeridiana.gpx:
+- Monelline 2:05
+- Monelline 2:05
