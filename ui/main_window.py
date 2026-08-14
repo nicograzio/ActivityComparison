@@ -68,6 +68,10 @@ class MainWindow(QMainWindow):
         self._strava_segments = []
         self._strava_occurrences = []
         self._strava_highlights_enabled = False
+        # Number of insight dialogs currently open (used to keep controls
+        # disabled until the last one closes).
+        self._insight_dialog_count = 0
+        self._insight_dialog_controls_backup = None
 
         central = QWidget()
         main_layout = QHBoxLayout(central)
@@ -671,6 +675,60 @@ class MainWindow(QMainWindow):
         self.right_panel.map.draw_highlighted_segments(segments, coord_key="coords_b")
         self.controls_panel.set_segments_insight_enabled(True)
 
+    def _open_insight_dialog(self, dialog):
+        """Open a non-modal dialog and disable conflicting controls while it's open.
+
+        The dialog is shown without blocking the main window, but the trim
+        sliders and the segment-related buttons (robot, Strava, highlight
+        common) are disabled until the last open insight dialog is closed.
+
+        Called by:
+            - ``_on_show_segments_insight``
+            - ``_on_strava_comparison_requested``
+
+        Args:
+            dialog: The QDialog to show non-modally.
+        """
+        if self._insight_dialog_count == 0:
+            # Store the current enabled states so they can be restored when
+            # the last dialog closes.
+            self._insight_dialog_controls_backup = {
+                "slider_left": self.left_panel.range_slider.isEnabled(),
+                "slider_right": self.right_panel.range_slider.isEnabled(),
+                "robot": self.controls_panel.show_segments_insight_button.isEnabled(),
+                "strava": self.controls_panel.show_strava_segments_button.isEnabled(),
+                "highlight": self.controls_panel.highlight_common_segments_button.isEnabled(),
+            }
+            # Disable the conflicting controls while the dialog is open.
+            self.left_panel.range_slider.setEnabled(False)
+            self.right_panel.range_slider.setEnabled(False)
+            self.controls_panel.show_segments_insight_button.setEnabled(False)
+            self.controls_panel.show_strava_segments_button.setEnabled(False)
+            self.controls_panel.highlight_common_segments_button.setEnabled(False)
+
+        self._insight_dialog_count += 1
+        dialog.finished.connect(lambda _: self._close_insight_dialog(dialog))
+        dialog.show()
+
+    def _close_insight_dialog(self, dialog):
+        """Restore the disabled controls when an insight dialog closes.
+
+        Called by:
+            - the ``finished`` signal of dialogs opened via ``_open_insight_dialog``
+
+        Args:
+            dialog: The dialog that just closed.
+        """
+        self._insight_dialog_count = max(0, self._insight_dialog_count - 1)
+        if self._insight_dialog_count == 0 and self._insight_dialog_controls_backup is not None:
+            backup = self._insight_dialog_controls_backup
+            self.left_panel.range_slider.setEnabled(backup["slider_left"])
+            self.right_panel.range_slider.setEnabled(backup["slider_right"])
+            self.controls_panel.show_segments_insight_button.setEnabled(backup["robot"])
+            self.controls_panel.show_strava_segments_button.setEnabled(backup["strava"])
+            self.controls_panel.highlight_common_segments_button.setEnabled(backup["highlight"])
+            self._insight_dialog_controls_backup = None
+
     def _on_show_segments_insight(self):
         """Open the insight dialog for the current common segments or Strava segments.
 
@@ -693,7 +751,7 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             dialog.comparison_requested.connect(self._on_strava_comparison_requested)
-            dialog.exec()
+            self._open_insight_dialog(dialog)
             return
 
         # Default behavior: Common segments insight
@@ -735,7 +793,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.segment_point_selected.connect(self._on_segment_point_selected)
-        dialog.exec()
+        self._open_insight_dialog(dialog)
 
     def _on_strava_segments_toggled(self, enabled: bool):
         """Handle Strava segments button toggle.
@@ -856,7 +914,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.segment_point_selected.connect(self._on_segment_point_selected)
-        dialog.exec()
+        self._open_insight_dialog(dialog)
 
     def _highlight_strava_segments_on_maps(self):
         """Draw each found Strava segment only on the map of its own track.
@@ -915,14 +973,14 @@ class MainWindow(QMainWindow):
             self._apply_fullscreen_mode("left")
         elif self._fullscreen_mode == "left":
             self._apply_fullscreen_mode(None)
- 
+
     def _on_right_fullscreen_toggled(self, enabled: bool):
         """Handle right-side fullscreen requests."""
         if enabled:
             self._apply_fullscreen_mode("right")
         elif self._fullscreen_mode == "right":
             self._apply_fullscreen_mode(None)
- 
+
     def _check_sync_controls_availability(self):
         """Enable sync controls only if both tracks are loaded."""
         both_loaded = self.left_panel.track is not None and self.right_panel.track is not None

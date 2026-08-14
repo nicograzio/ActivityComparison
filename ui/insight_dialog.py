@@ -109,7 +109,7 @@ class InsightDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("Analisi Segmenti Comuni")
-        self.setModal(True)
+        self.setModal(False)
         self.resize(1100, 600)
 
         self.segments = segments
@@ -313,7 +313,7 @@ class InsightDialog(QDialog):
             parent=self,
         )
         dialog.point_selected.connect(self.segment_point_selected)
-        dialog.exec()
+        dialog.show()
 
     def _populate_coach_insights(self):
         """Import the coach insights generator from core.analyzer."""
@@ -330,7 +330,7 @@ class SegmentDetailDialog(QDialog):
     def __init__(self, segment, track_a, track_b, name_a="Attività A", name_b="Attività B", parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Dettaglio Segmento {segment.get('id', '?')}")
-        self.setModal(True)
+        self.setModal(False)
         self.resize(1000, 600)
 
         self.segment = segment

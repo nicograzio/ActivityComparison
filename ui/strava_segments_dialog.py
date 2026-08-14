@@ -81,7 +81,7 @@ class StravaSegmentsDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("Segmenti Strava Trovati")
-        self.setModal(True)
+        self.setModal(False)
         self.resize(1050, 650)
 
         self.occurrences = occurrences
