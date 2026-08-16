@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import gpxpy
 import numpy as np
 
-from core.analyzer import track_distance_profile
+from core.analyzer import track_distance_profile, haversine_distance
 from core.track import Track, TrackPoint
 
 # =============================================================================
@@ -58,6 +58,42 @@ MAX_DENSITY = 2.2
 
 # Lunghezza minima in metri per considerare un'occorrenza valida.
 MIN_LENGTH_M = 20.0
+
+# Finestra (in indici di traccia) per la proiezione dei capi del segmento sulla
+# traccia: si cerca il punto di traccia spazialmente più vicino al gate del
+# segmento entro ±window attorno al punto di catena di riferimento.
+PROJECTION_WINDOW = 15
+
+# Estensione in avanti (indici di traccia) dedicata al SOLO gate di fine:
+# quando l'ultimo punto del segmento GPS "termina" qualche metro prima rispetto
+# al punto reale in cui la traccia attraversa il cancello d'uscita, la finestra
+# piccola taglia la coda e sottostima il tempo (caso tipico: salite lunghe).
+# La ricerca estesa è limitata in avanti per non agganciare rami paralleli/nuovi
+# passaggi che si trovano 'indietro' lungo la traccia.
+END_PROJECTION_EXTRA_IDX = 120
+
+# Distanza massima (metri) ammessa per accettare la proiezione estesa in avanti
+# del gate di fine rispetto al punto-limite del segmento.
+END_PROJECTION_ACCEPT_M = DISTANCE_THRESHOLD_M
+
+# Un candidato di fine va considerato il PRIMO attraversamento del gate: dopo
+# il punto di minima distanza la traccia deve allontanarsi dal gate oltre questa
+# soglia (metri) prima di ritenere esaurito l'avvallo.
+END_PROJECTION_EXIT_RISE_M = 12.0
+
+# Miglioramento minimo (metri) richiesto alla proiezione estesa per essere
+# adottata al posto della finestra base: evita di modificare i tempi dei
+# segmenti il cui gate è già agganciato correttamente.
+END_PROJECTION_MIN_IMPROVE_M = 5.0
+
+# Soglia di "stazionarieta'" per la proiezione dei gate: un tratto di traccia
+# tra due campioni consecutivi che si muove più lentamente di questa soglia
+# (km/h) viene escluso dai candidati di attraversamento del gate. In questo
+# modo i punti in cui il ciclista si è fermato/atteso nei pressi dell'inizio o
+# della fine del segmento (GPS che accumula campioni quasi coincidenti) non
+# vengono interpretati come "attraversamento del cancello", evitando che una
+# lunga sosta gonfi il tempo del segmento di minuti.
+STATIONARY_SPEED_KMH = 2.0
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -89,6 +125,19 @@ def _haversine_to_points(
     np.clip(a, 0.0, 1.0, out=a)
     return _EARTH_RADIUS_M * 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
 
+def _haversine_3d_m(p1: TrackPoint, p2: TrackPoint) -> float:
+    """Distanza 3D tra due punti GPX (inclusiva di altitudine)."""
+    deg2rad = np.pi / 180.0
+    dlat = (p2.latitude - p1.latitude) * deg2rad
+    dlon = (p2.longitude - p1.longitude) * deg2rad
+    a = (np.sin(dlat / 2.0) ** 2 +
+         np.cos(p1.latitude * deg2rad) * np.cos(p2.latitude * deg2rad) *
+         np.sin(dlon / 2.0) ** 2)
+    dist_2d = _EARTH_RADIUS_M * 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1.0 - a))
+    dalt = (p2.altitude or 0.0) - (p1.altitude or 0.0)
+    return float(np.sqrt(dist_2d**2 + dalt**2))
+
+
 
 def _project_point_on_segment(
     lat_p: float, lon_p: float, lat_a: float, lon_a: float, lat_b: float, lon_b: float
@@ -117,9 +166,36 @@ def _project_point_on_segment(
     return float(np.clip(r, 0.0, 1.0))
 
 
+def _track_segment_kmh(track: Track, k: int) -> Optional[float]:
+    """Velocità media (km/h) tra due campioni consecutivi di traccia.
+
+    Returns:
+        Velocità in km/h, oppure ``None`` se i timestamp non permettono il calcolo
+        (in tal caso il tratto non viene considerato stazionario).
+
+    Args:
+        track: La traccia.
+        k: Indice del primo dei due punti consecutivi.
+    """
+    a = track.points[k]
+    b = track.points[k + 1]
+    if a.timestamp is None or b.timestamp is None:
+        return None
+    dt = (b.timestamp - a.timestamp).total_seconds()
+    if dt <= 0:
+        return None
+    dist = haversine_distance(a, b)
+    return float((dist / dt) * 3.6)
+
+
 def _find_best_track_projection(
-    track: Track, target_lat: float, target_lon: float, center_idx: int, window: int = 15
-) -> Tuple[int, float]:
+    track: Track,
+    target_lat: float,
+    target_lon: float,
+    center_idx: int,
+    window: int = PROJECTION_WINDOW,
+    direction: str = "both",
+) -> Tuple[int, float, float]:
     """Cerca il miglior segmento di traccia su cui proiettare un punto.
 
     Args:
@@ -127,18 +203,36 @@ def _find_best_track_projection(
         target_lat/lon: Coordinate del punto del segmento (es. inizio/fine).
         center_idx: Indice indicativo vicino a dove cercare (da chain).
         window: Ampiezza della finestra di ricerca.
+        direction: Ambito della ricerca sugli indici di traccia:
+            - ``both`` (default): finestra simmetrica ``[center-window, center+window]``;
+            - ``forward``: solo ``[center, center+window]`` (gate di fine che può
+              proseguire oltre la catena);
+            - ``backward``: solo ``[center-window, center]``.
 
     Returns:
-        Tuple (indice_track_a, frazione_r).
+        Tuple (indice_track_a, frazione_r, distanza_residua_m).
     """
     best_dist = float("inf")
     best_k = center_idx
     best_r = 0.0
 
-    start_k = max(0, center_idx - window)
-    end_k = min(len(track.points) - 2, center_idx + window)
+    if direction == "forward":
+        start_k = center_idx
+        end_k = min(len(track.points) - 2, center_idx + window)
+    elif direction == "backward":
+        start_k = max(0, center_idx - window)
+        end_k = center_idx
+    else:  # both
+        start_k = max(0, center_idx - window)
+        end_k = min(len(track.points) - 2, center_idx + window)
 
     for k in range(start_k, end_k + 1):
+        # I tratti "stazionari" (sosta GPS) non vengono considerati come
+        # attraversamento del gate: evitano che una fermata gonfi il tempo.
+        speed = _track_segment_kmh(track, k)
+        if speed is not None and speed < STATIONARY_SPEED_KMH:
+            continue
+
         pa = track.points[k]
         pb = track.points[k + 1]
 
@@ -158,7 +252,72 @@ def _find_best_track_projection(
             best_k = k
             best_r = r
 
-    return best_k, best_r
+    return best_k, best_r, best_dist
+
+
+def _find_first_gate_valley(
+    track: Track,
+    target_lat: float,
+    target_lon: float,
+    center_idx: int,
+    max_extra_idx: int,
+    accept_m: float,
+    exit_rise_m: float,
+) -> Tuple[Optional[int], float, float]:
+    """Trova il PRIMO avvallamento della distanza gate-traccia in avanti.
+
+    Scansiona gli indici di traccia da ``center_idx`` in avanti e individua il
+    primo minimo locale della distanza tra il gate e la traccia: il punto in cui
+    l'atleta raggiunge il cancello per la prima volta e viene considerato
+    'uscito' quando la traccia si allontana dal gate di oltre ``exit_rise_m``.
+
+    Args:
+        track: La traccia dell'utente.
+        target_lat/lon: Coordinate del punto limite del segmento (il gate).
+        center_idx: Indice di traccia di partenza (fine della catena appaiata).
+        max_extra_idx: Numero massimo di indici di traccia scansionati in avanti.
+        accept_m: Distanza massima ammessa per considerare valido l'avvallo.
+        exit_rise_m: Allontanamento (metri) oltre il minimo che chiude l'avvallo.
+
+    Returns:
+        Tupla ``(k, r, distanza_m)`` del primo avvallo, oppure
+        ``(None, 0.0, inf)`` se nessun punto resta entro ``accept_m``.
+    """
+    start_k = max(0, center_idx)
+    end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
+
+    best_k: Optional[int] = None
+    best_r = 0.0
+    best_d = float("inf")
+
+    for k in range(start_k, end_k + 1):
+        # I tratti "stazionari" (sosta GPS) non vengono considerati come
+        # attraversamento del gate: evitano che una fermata gonfi il tempo.
+        speed = _track_segment_kmh(track, k)
+        if speed is not None and speed < STATIONARY_SPEED_KMH:
+            continue
+
+        pa = track.points[k]
+        pb = track.points[k + 1]
+
+        r = _project_point_on_segment(
+            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
+        )
+        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
+        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
+        d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
+
+        if best_k is None or d < best_d:
+            best_k = k
+            best_r = r
+            best_d = d
+        elif d - best_d > exit_rise_m and best_d <= accept_m:
+            # La traccia ha lasciato la zona del gate: primo avvallo chiuso.
+            break
+
+    if best_k is not None and best_d <= accept_m:
+        return best_k, best_r, best_d
+    return None, 0.0, float("inf")
 
 
 def load_strava_segments(folder_path: str) -> List[dict]:
@@ -563,17 +722,35 @@ def find_strava_segments_in_track(
             t0_chain = min(ti for _, ti in chain)
             t1_chain = max(ti for _, ti in chain)
 
-            # INTERPOLAZIONE LINEARE (Stile Strava)
-            # Cerchiamo il miglior segmento della traccia su cui proiettare
-            # l'inizio e la fine teorica del segmento Strava.
-            k_start, r_start = _find_best_track_projection(
-                track, seg_start_lat, seg_start_lon, t0_chain, window=15
-            )
-            k_end, r_end = _find_best_track_projection(
-                track, seg_end_lat, seg_end_lon, t1_chain, window=15
+            # PROIEZIONE (stile Strava): cerchiamo il miglior segmento di traccia
+            # su cui proiettare l'inizio e la fine teorica del segmento Strava.
+            # Il gate di inizio usa la finestra simmetrica standard. Il gate di
+            # fine viene inoltre ri-cercato in AVANTI lungo la traccia: quando
+            # l'ultimo punto del segmento GPS termina qualche metro prima del
+            # punto reale in cui la traccia attraversa l'uscita, la finestra
+            # piccola taglierebbe la coda sottostimando il tempo (salite lunghe).
+            k_start, r_start, _ = _find_best_track_projection(
+                track, seg_start_lat, seg_start_lon, t0_chain, window=PROJECTION_WINDOW
             )
 
-            # Calcolo dei timestamp precisi (frazionari)
+            k_end, r_end, d_end = _find_best_track_projection(
+                track, seg_end_lat, seg_end_lon, t1_chain, window=PROJECTION_WINDOW
+            )
+            k_valley, r_valley, d_valley = _find_first_gate_valley(
+                track, seg_end_lat, seg_end_lon, t1_chain,
+                max_extra_idx=END_PROJECTION_EXTRA_IDX,
+                accept_m=END_PROJECTION_ACCEPT_M,
+                exit_rise_m=END_PROJECTION_EXIT_RISE_M,
+            )
+            # Si adotta il primo avvallo in avanti solo se è dentro la tolleranza,
+            # più vicino al gate di un margine minimo e migliora la finestra base:
+            # così i segmenti già agganciati correttamente non vengono toccati.
+            if (
+                d_valley <= END_PROJECTION_ACCEPT_M
+                and d_valley < d_end - END_PROJECTION_MIN_IMPROVE_M
+            ):
+                k_end, r_end = k_valley, r_valley
+
             def _get_interp_time(k: int, r: float) -> Optional[float]:
                 ta = track.points[k].timestamp
                 tb = track.points[k + 1].timestamp
