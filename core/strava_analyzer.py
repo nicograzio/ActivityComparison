@@ -29,7 +29,8 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI (STILE STRAVA)
 # =============================================================================
 # Tolleranza GPS in metri per agganciare un punto della traccia al segmento.
-DISTANCE_THRESHOLD_M = 40.0
+# Ripristinata a 35.0 metri come compromesso tra selettività e tolleranza al rumore GPS.
+DISTANCE_THRESHOLD_M = 35.0
 
 # Numero minimo di punti del segmento che devono coincidere con la traccia.
 MIN_MATCH_POINTS = 5
@@ -53,8 +54,9 @@ PROGRESS_SLACK_M = 30.0
 
 # Rapporti tra lunghezza traccia trovata e lunghezza segmento originale.
 # Utili per scartare match parziali o giri immotivatamente lunghi (loop extra).
-MIN_DENSITY = 0.3
-MAX_DENSITY = 2.2
+# Rialzato leggermente il range dopo i test per evitare di scartare match validi (da 0.8-1.2 a 0.5-1.5).
+MIN_DENSITY = 0.5
+MAX_DENSITY = 1.5
 
 # Lunghezza minima in metri per considerare un'occorrenza valida.
 MIN_LENGTH_M = 20.0
@@ -815,4 +817,30 @@ def find_strava_segments_in_track(
             )
 
     results.sort(key=lambda occ: (occ["segment_name"], occ["start_idx"]))
-    return results
+
+    # Rimuovi il codice aggiunto precedentemente in find_strava_segments_in_track (righe 820-851)
+    # e sostituiscilo con una versione più aggressiva che impedisce a segmenti diversi
+    # di condividere gli indici di traccia, dando priorità al segmento che ha
+    # il miglior "match score" globale (n_match_points).
+
+    # 1. Ordina tutti i risultati per score decrescente
+    results.sort(key=lambda x: x["n_match_points"], reverse=True)
+
+    final_results = []
+    # 2. Crea una maschera di indici di traccia "occupati"
+    occupied = np.zeros(len(track.points), dtype=bool)
+
+    for res in results:
+        # Controlla se la porzione di traccia è già occupata
+        t0, t1 = res["start_idx"], res["end_idx"]
+        # Se > 50% dell'intervallo è già occupato, scarta il match (conflitto)
+        if np.sum(occupied[t0 : t1 + 1]) > 0.5 * (t1 - t0 + 1):
+            continue
+            
+        # Altrimenti, accetta il match e marca gli indici come occupati
+        final_results.append(res)
+        occupied[t0 : t1 + 1] = True
+
+    final_results.sort(key=lambda occ: occ["start_idx"])
+    return final_results
+
