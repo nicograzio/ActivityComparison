@@ -931,13 +931,20 @@ class MainWindow(QMainWindow):
 
         left_segments = []
         right_segments = []
+        # Per un match corretto, usiamo il nome del file della traccia se l'oggetto è diverso
+        # a causa del trim (la traccia passata al listener è la versione trimmata)
         for i, occ in enumerate(self._strava_occurrences):
             occ_track = occ.get("track")
-            if left_track is not None and occ_track is left_track:
+            
+            # Controllo se è la traccia corretta comparando il nome/percorso del file
+            is_left = left_track is not None and occ_track.name == left_track.name
+            is_right = right_track is not None and occ_track.name == right_track.name
+            
+            if is_left:
                 left_segments.append(
                     {"coords": occ.get("coords", []), "id": i + 1}
                 )
-            elif right_track is not None and occ_track is right_track:
+            elif is_right:
                 right_segments.append(
                     {"coords": occ.get("coords", []), "id": i + 1}
                 )
