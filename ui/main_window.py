@@ -844,13 +844,16 @@ class MainWindow(QMainWindow):
             return
 
         self._strava_occurrences = []
-        if left_track:
+        left_visible = self.left_panel._visible_track()
+        if left_visible:
             self._strava_occurrences.extend(
-                find_strava_segments_in_track(self._strava_segments, left_track)
+                find_strava_segments_in_track(self._strava_segments, left_visible)
             )
-        if right_track:
+        
+        right_visible = self.right_panel._visible_track()
+        if right_visible:
             self._strava_occurrences.extend(
-                find_strava_segments_in_track(self._strava_segments, right_track)
+                find_strava_segments_in_track(self._strava_segments, right_visible)
             )
 
         if not self._strava_occurrences:
