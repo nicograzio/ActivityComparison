@@ -7,7 +7,6 @@ Pedalata_serale_11082026.gpx:
 - Monelline 2:08
 
 Pedalata_pomeridiana_05082026.gpx:
-- TerminatoR 2:55
 - Pistino Etilico 2:36
 
 Pedalata_serale_03082026.gpx:
@@ -16,7 +15,6 @@ Pedalata_serale_03082026.gpx:
 Pedalata_mattutina_01082026.gpx:
 - Monelline 2:12
 - BePa UP TRAIL 16:02
-- TerminatoR 14:27
 - Pistino Etilico 7:27
 
 Pedalata_pomeridiana_29072026.gpx:
@@ -41,13 +39,33 @@ Pedalata_pomeridiana_26072026.gpx:
 Pedalata_serale_23072026.gpx:
 - Pistino Etilico 2:40
 - BePa UP TRAIL 14:55
-- TerminatoR 4:23
 - Pistino Etilico 2:35
 
 strava_full.gpx:
 - Monelline 1:53
 - Monelline 1:52
+- BePa UP TRAIL 20:39
 
-Pedalata_pomeridiana.gpx:
+Pedalata_pomeridiana_11072026.gpx:
 - Monelline 2:05
 - Monelline 2:05
+- BePa UP TRAIL 14:31
+
+Pedalata_pomeridiana_11072026.fit:
+- Monelline 2:05
+- Monelline 2:05
+- BePa UP TRAIL 14:31
+
+Pedalata_pomeridiana_16082026.gpx:
+- Monelline 2:06
+- BePa UP TRAIL 15:18
+- Pistino Etilico 2:35
+
+Pedalata_pomeridiana_17082026.gpx:
+- Pistino Etilico 2:28
+
+Pedalata_pomeridiana_19082026.fit:
+- Pistino Etilico 2:29
+
+Pedalata_pomeridiana_03072026.fit:
+- Monelline 2:06

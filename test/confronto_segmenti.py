@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.fit_loader import load_fit  # noqa: E402
 from core.gpx_loader import load_gpx  # noqa: E402
 from core.strava_analyzer import (  # noqa: E402
     find_strava_segments_in_track,
@@ -21,6 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = ROOT / "Examples"
 SEGMENTS_DIR = ROOT / "Strava_Segments"
 STRAVA_TXT = ROOT / "test" / "esempio_tempo_segmenti.txt"
+
+# Pesi per il punteggio qualità (ottimizzazione di core/strava_analyzer.py)
+SCORE_W_RECALL = 0.35     # peso: quota passaggi Strava rilevati dall'algoritmo
+SCORE_W_PRECISION = 0.35  # peso: quota passaggi algoritmo senza extra spuri
+SCORE_W_TIME = 0.30       # peso: precisione temporale (delta medio vs Strava)
+TIME_TOLERANCE_S = 15.0   # delta (s) oltre il quale l'accuratezza temporale è 0
 
 
 def normalize(name: str) -> str:
@@ -77,17 +84,27 @@ def main() -> None:
 
     strava = parse_strava_txt(STRAVA_TXT)
 
-    gpx_files = sorted(EXAMPLES_DIR.glob("*.gpx"))
+    activity_files = sorted(
+        list(EXAMPLES_DIR.glob("*.gpx")) + list(EXAMPLES_DIR.glob("*.fit"))
+    )
     activities_diff = 0
+    activities_no_delta = 0  # attività con tutti i delta accoppiati = 0 o < 1s
     total_seg_strava = 0
     total_seg_algo = 0
+    total_missing = 0
+    total_extra = 0
     matched_ok = 0
     matched_small = 0
     matched_off = 0
+    total_paired = 0
+    sum_abs_delta_s = 0.0
 
     print("=" * 78)
-    for gpx_file in gpx_files:
-        track = load_gpx(str(gpx_file))
+    for activity_file in activity_files:
+        if activity_file.suffix.lower() == ".fit":
+            track = load_fit(str(activity_file))
+        else:
+            track = load_gpx(str(activity_file))
         found = find_strava_segments_in_track(segs, track)
 
         found_norm = [  # (nome_norm, time_sec, nome_reale, direzione, len_m, start_km)
@@ -95,7 +112,7 @@ def main() -> None:
              o["length_m"], o["start_dist_m"] / 1000.0)
             for o in found
         ]
-        strava_list = strava.get(gpx_file.name, [])  # (nome_norm, sec, nome_reale)
+        strava_list = strava.get(activity_file.name, [])  # (nome_norm, sec, nome_reale)
 
         total_seg_strava += len(strava_list)
         total_seg_algo += len(found_norm)
@@ -134,6 +151,8 @@ def main() -> None:
             for a, s in pairs:
                 ssec = s[1]
                 diff = a[1] - ssec
+                total_paired += 1
+                sum_abs_delta_s += abs(float(diff))
                 if abs(diff) <= 3:
                     marker = "OK"
                     matched_ok += 1
@@ -149,12 +168,18 @@ def main() -> None:
             for a in a_left:
                 extra.append(a)
 
+        total_missing += len(missing)
+        total_extra += len(extra)
+
         has_diff = bool(missing) or bool(extra) or any(d[5] != "OK" for d in diff_line)
         if has_diff:
             activities_diff += 1
+        # Attività senza scostamenti: tutti i delta accoppiati = 0 o < 1s
+        if diff_line and all(abs(d[1]) < 1 for d in diff_line):
+            activities_no_delta += 1
         status = "OK" if not has_diff else "DIFF"
 
-        print(f"\n### {gpx_file.name}  [{status}]")
+        print(f"\n### {activity_file.name}  [{status}]")
         print(f"    Strava:    {', '.join(f'{n} {fmt_time(s)}' for _, s, n in strava_list) or '(nessuno)'}")
         print(f"    Algoritmo: {', '.join(f'{n} {fmt_time(s)} ({d})' for _, s, n, d, _l, _k in found_norm) or '(nessuno)'}")
 
@@ -169,15 +194,42 @@ def main() -> None:
             print(f"    EXTRA (solo algo): {[f'{n} {fmt_time(t)} ({d}, {l/1000:.2f} km @ {k:.1f} km)' for _, t, n, d, l, k in extra]}  # passaggi rilevati ma senza tempo nel file Strava")
 
     print("\n" + "=" * 78)
+
+    # --- Punteggio qualità algoritmo (per ottimizzare strava_analyzer.py) ---
+    recall_pct = (
+        100.0 * (total_seg_strava - total_missing) / total_seg_strava
+        if total_seg_strava > 0
+        else 0.0
+    )
+    precision_pct = (
+        100.0 * (total_seg_algo - total_extra) / total_seg_algo
+        if total_seg_algo > 0
+        else 0.0
+    )
+    mean_abs_delta = sum_abs_delta_s / total_paired if total_paired > 0 else 0.0
+    time_acc_pct = (
+        max(0.0, 100.0 * (1.0 - mean_abs_delta / TIME_TOLERANCE_S))
+        if total_paired > 0
+        else 0.0
+    )
+    quality_score = (
+        SCORE_W_RECALL * recall_pct
+        + SCORE_W_PRECISION * precision_pct
+        + SCORE_W_TIME * time_acc_pct
+    )
+
     print("\nRIEPILOGO")
-    print(f"  Attività confrontate: {len(gpx_files)} (con differenze: {activities_diff})")
+    print(f"  Attività confrontate: {len(activity_files)} (con differenze: {activities_diff})")
+    print(f"  Attività senza scostamenti (delta = 0 o < 1s): {activities_no_delta}")
     print(f"  Passaggi Strava totali: {total_seg_strava} | Passaggi algoritmo: {total_seg_algo}")
+    print(f"  Percorsi mancanti: {total_missing} | Percorsi extra: {total_extra}")
     print(f"  Tempi entro +/-3s:  {matched_ok}")
     print(f"  Tempi entro +/-15s: {matched_small}")
     print(f"  Tempi oltre +/-15s: {matched_off}")
-    print("\nNota: il file esempio_tempo_segmenti.txt contiene solo i passaggi con tempo\n"
-          "registrato: le occorrenze 'EXTRA' dell'algoritmo possono essere passaggi reali\n"
-          "percorsi ma con tempo Strava non riportato (es. BePa in Pedalata_pomeridiana.gpx e strava_full.gpx).")
+    print(f"\n  Punteggio qualità algoritmo: {quality_score:.1f}/100")
+    print(f"    Recall passaggi Strava:    {recall_pct:5.1f}%  ({total_seg_strava - total_missing}/{total_seg_strava})")
+    print(f"    Precisione (no extra):     {precision_pct:5.1f}%")
+    print(f"    Accuratezza tempo:         {time_acc_pct:5.1f}%  (delta medio {mean_abs_delta:.2f}s)")
 
 
 if __name__ == "__main__":

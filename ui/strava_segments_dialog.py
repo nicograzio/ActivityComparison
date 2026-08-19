@@ -10,6 +10,7 @@ Consumes:
 """
 
 import html
+import logging
 import os
 
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
@@ -31,6 +32,8 @@ from core.analyzer import track_distance_profile
 from core.geocoder import reverse_geocode
 from ui.insight_dialog import _format_duration
 
+log = logging.getLogger(__name__)
+
 
 class _GeocodeWorker(QThread):
     """Thread asincrono per il reverse geocoding dei segmenti.
@@ -39,7 +42,7 @@ class _GeocodeWorker(QThread):
     fuori dal thread della UI, evitando blocchi durante le chiamate HTTP.
     """
 
-    geocoded = pyqtSignal(str, str)  # segment_name, location ("" se non trovata)
+    geocoded = pyqtSignal(str, str, bool)  # segment_name, location, ok
 
     def __init__(self, points: list, parent=None):
         """Crea il worker.
@@ -56,8 +59,12 @@ class _GeocodeWorker(QThread):
         for name, lat, lon in self._points:
             if self.isInterruptionRequested():
                 break
-            loc = reverse_geocode(lat, lon)
-            self.geocoded.emit(name, loc or "")
+            try:
+                loc = reverse_geocode(lat, lon)
+                self.geocoded.emit(name, loc or "", True)
+            except Exception as exc:
+                log.error("Errore inatteso nel geocoding di %s: %s", name, exc)
+                self.geocoded.emit(name, "", False)
 
 
 class StravaSegmentsDialog(QDialog):
@@ -411,19 +418,27 @@ class StravaSegmentsDialog(QDialog):
         self._geocode_worker.geocoded.connect(self._on_geocoded)
         self._geocode_worker.start()
 
-    def _on_geocoded(self, segment_name: str, location: str):
+    def _on_geocoded(self, segment_name: str, location: str, ok: bool):
         """Aggiorna l'etichetta della posizione per un segmento."""
         label = self._location_labels.get(segment_name)
         if label is None:
             return
         if location:
-            pos_text = f"<b>{location}</b>"
+            # Mostra una versione abbreviata nell'header e l'indirizzo
+            # completo nel tooltip.
+            short = self._shorten_address(location)
+            pos_text = f"<b>{self._escape(short)}</b>"
+            label.setToolTip(location)
+        elif not ok:
+            pos_text = "<span style='color:#E0A0A0;'>non disponibile (errore di rete)</span>"
+            label.setToolTip("")
         else:
             mid = self._segment_midpoint(segment_name)
             if mid:
                 pos_text = f"{mid[0]:.4f}, {mid[1]:.4f}"
             else:
                 pos_text = "N/D"
+            label.setToolTip("")
         label.setText(self._build_segment_header_text(segment_name, pos_text))
 
     def closeEvent(self, event):
@@ -456,6 +471,22 @@ class StravaSegmentsDialog(QDialog):
         self.accept()
 
     # ------------------------------------------------------------- Utilities
+
+    @staticmethod
+    def _shorten_address(address: str) -> str:
+        """Accorcia un indirizzo completo per l'header del segmento.
+
+        Mostra solo i primi 2-3 componenti (es. strada e località) e
+        aggiunge "…" se l'indirizzo è più lungo.
+        """
+        parts = [p.strip() for p in address.split(",") if p.strip()]
+        if len(parts) <= 2:
+            return address
+        # Strada + località (primi 2 componenti)
+        short = ", ".join(parts[:2])
+        if len(short) > 60:
+            return short[:57] + "…"
+        return short
 
     @staticmethod
     def _format_distance(meters: float) -> str:

@@ -17,25 +17,52 @@ from core.track import Track, TrackPoint
 # =============================================================================
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
-DISTANCE_THRESHOLD_M = 35.0
-MIN_MATCH_POINTS = 5
+# Soglia di vicinanza GPS per considerare un punto di traccia come candidato
+DISTANCE_THRESHOLD_M = 44.0
+# Numero minimo di punti di traccia che devono coincidere con il segmento
+MIN_MATCH_POINTS = 4
+# Rapporto per definire la tolleranza di inizio/fine (in base ai punti totali)
 END_TOL_RATIO = 0.15
-MAX_GAP_RATIO = 0.08
-CLUSTER_GAP_IDX = 25
+# Rapporto massimo di gap (punti segmento senza candidati) rispetto al totale
+MAX_GAP_RATIO = 0.20
+# Distanza minima tra indici di traccia per raggruppare i candidati (anchors)
+CLUSTER_GAP_IDX = 40
 
+# Parametri per la coerenza del progresso lungo il segmento
 PROGRESS_RATIO = 2.5
 PROGRESS_SLACK_M = 30.0
 
+# Parametri di densita' e lunghezza per la validita' di un'occorrenza
 MIN_DENSITY = 0.5
 MAX_DENSITY = 1.5
 MIN_LENGTH_M = 20.0
 
+# Parametri per la proiezione fine dei tempi di inizio/fine
 PROJECTION_WINDOW = 20
-END_PROJECTION_EXTRA_IDX = 120
-END_PROJECTION_ACCEPT_M = DISTANCE_THRESHOLD_M
-END_PROJECTION_EXIT_RISE_M = 12.0
-END_PROJECTION_MIN_IMPROVE_M = 5.0
-STATIONARY_SPEED_KMH = 2.0
+# Indice di scansione per trovare il valle della fine (ridotto da 150)
+END_PROJECTION_EXTRA_IDX = 60
+END_PROJECTION_ACCEPT_M = 45.0
+END_PROJECTION_EXIT_RISE_M = 10.0
+END_PROJECTION_MIN_IMPROVE_M = 0.1
+
+# Parametri per la proiezione dello START (simmetrici a quelli della fine).
+# exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
+# del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
+START_PROJECTION_EXTRA_IDX = 60
+START_PROJECTION_ACCEPT_M = 35.0
+START_PROJECTION_EXIT_RISE_M = 3.0
+
+# Parametri per la gestione degli ingressi e passaggi spuri
+TRIM_REF_POINTS = 4
+TRIM_CHECK_LIMIT = 30
+TRIM_INDEX_GAP = 15
+
+# Parametri per il raggruppamento degli anchor point iniziali
+ANCHOR_SCAN_RANGE = 5
+
+# Parametri algoritmi di selezione
+STATIONARY_SPEED_KMH = 1.0
+OVERLAP_OCCUPANCY_THRESHOLD = 0.5
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -80,7 +107,7 @@ def _project_point_on_segment(
 
 
 def _track_segment_kmh(track: Track, k: int) -> Optional[float]:
-    """Velocità media (km/h) tra due campioni consecutivi di traccia."""
+    """Velocita' media (km/h) tra due campioni consecutivi di traccia."""
     a = track.points[k]
     b = track.points[k + 1]
     if a.timestamp is None or b.timestamp is None:
@@ -141,7 +168,12 @@ def _find_first_gate_valley(
     accept_m: float,
     exit_rise_m: float,
 ) -> Tuple[Optional[int], float, float]:
-    """Trova il primo avvallamento della distanza gate-traccia in uscita."""
+    """Trova il primo avvallamento della distanza gate-traccia in uscita.
+
+    Partendo dal centro (minimo geografico) va AVANTI nella traccia cercando
+    il primo punto che dista meno dal target, rompendo quando la distanza
+    risalita supera `exit_rise_m`. Serve a proiettare il FINE del segmento.
+    """
     start_k = max(0, center_idx)
     end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
 
@@ -150,6 +182,56 @@ def _find_first_gate_valley(
     best_d = float("inf")
 
     for k in range(start_k, end_k + 1):
+        speed = _track_segment_kmh(track, k)
+        if speed is not None and speed < STATIONARY_SPEED_KMH:
+            continue
+
+        pa = track.points[k]
+        pb = track.points[k + 1]
+
+        r = _project_point_on_segment(
+            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
+        )
+        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
+        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
+        d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
+
+        if best_k is None or d < best_d:
+            best_k = k
+            best_r = r
+            best_d = d
+        elif d - best_d > exit_rise_m and best_d <= accept_m:
+            break
+
+    if best_k is not None and best_d <= accept_m:
+        return best_k, best_r, best_d
+    return None, 0.0, float("inf")
+
+
+def _find_last_gate_valley(
+    track: Track,
+    target_lat: float,
+    target_lon: float,
+    center_idx: int,
+    max_extra_idx: int,
+    accept_m: float,
+    exit_rise_m: float,
+) -> Tuple[Optional[int], float, float]:
+    """Trova l'ultimo avvallamento della distanza gate-traccia andando indietro.
+
+    Mirror di `_find_first_gate_valley`: parte dal centro (minimo geografico) e va
+    INDIETRO nella traccia cercando il primo punto che dista meno dal target,
+    rompendo quando la distanza risalita supera `exit_rise_m`. Serve a proiettare
+    l'INIZIO del segmento in modo simmetrico a `_find_first_gate_valley`.
+    """
+    start_k = max(0, center_idx - max_extra_idx)
+    end_k = min(len(track.points) - 2, center_idx)
+
+    best_k: Optional[int] = None
+    best_r = 0.0
+    best_d = float("inf")
+
+    for k in range(end_k, start_k - 1, -1):
         speed = _track_segment_kmh(track, k)
         if speed is not None and speed < STATIONARY_SPEED_KMH:
             continue
@@ -280,12 +362,17 @@ def _walk_forward(
     candidates: List[np.ndarray],
     track_profile: List[float],
     segment_profile: List[float],
+    track_points: List[TrackPoint],
+    segment_points: List[TrackPoint],
     start_track_idx: int,
     max_gap: int,
     progress_ratio: float,
     progress_slack_m: float,
 ) -> List[Tuple[int, int]]:
-    """Camminata greedy in avanti che appaia il segmento alla traccia."""
+    """Camminata greedy in avanti che appaia il segmento alla traccia.
+
+    Restituisce una catena di tuple (indice_segmento, indice_traccia).
+    """
     chain: List[Tuple[int, int]] = []
     t = start_track_idx - 1
     prev_seg: Optional[int] = None
@@ -301,27 +388,43 @@ def _walk_forward(
                 break
             continue
 
-        matched = False
+        matched_track_i: Optional[int] = None
+        best_match_dist = float("inf")
+
+        # Cerchiamo il miglior candidato entro una finestra ragionevole
         for j in range(k, len(cand)):
-            track_i = int(cand[j])
+            curr_track_i = int(cand[j])
+
+            # Limite massimo di salto avanti nella traccia per punto segmento
+            if prev_track is not None and (curr_track_i - prev_track > 150):
+                break
+
             if prev_seg is not None and prev_track is not None:
                 d_seg = segment_profile[seg_i] - segment_profile[prev_seg]
-                d_track = track_profile[track_i] - track_profile[prev_track]
+                d_track = track_profile[curr_track_i] - track_profile[prev_track]
                 if d_track > max(d_seg * progress_ratio, d_seg + progress_slack_m):
                     continue
-            matched = True
-            break
 
-        if not matched:
+            # Calcolo distanza geografica per scegliere il punto piu' vicino
+            d_geo = haversine_distance(segment_points[seg_i], track_points[curr_track_i])
+            if d_geo < best_match_dist:
+                best_match_dist = d_geo
+                matched_track_i = curr_track_i
+
+            # Se siamo molto vicini (< 10m), ottimizziamo prendendo il punto
+            if d_geo < 10.0:
+                break
+
+        if matched_track_i is None:
             skipped += 1
             if skipped > max_gap:
                 break
             continue
 
-        chain.append((seg_i, track_i))
+        chain.append((seg_i, matched_track_i))
         prev_seg = seg_i
-        prev_track = track_i
-        t = track_i
+        prev_track = matched_track_i
+        t = matched_track_i
         skipped = 0
 
     return chain
@@ -333,23 +436,26 @@ def _trim_chain_start(
     track: Track,
     reverse: bool = False,
 ) -> List[Tuple[int, int]]:
-    """Elimina i loop/avvicinamenti iniziali identificando il salto temporale o la discontinuità
-
+    """Elimina i loop/avvicinamenti iniziali identificando il salto temporale o la discontinuita'
     causata dal passaggio in salita/avvicinamento prima dell'imbocco effettivo.
     """
-    if len(chain) < 4:
+    if len(chain) < TRIM_REF_POINTS:
         return chain
 
-    # Prendiamo il punto di inizio e un punto di riferimento leggermente avanzato nel segmento (~30-50m)
+    # Prendiamo il punto di inizio e un punto di riferimento leggermente avanzato nel segmento
     p_start = segment_track.points[-1 if reverse else 0]
-    ref_idx = max(0, len(segment_track.points) - 4) if reverse else min(4, len(segment_track.points) - 1)
+    ref_idx = (
+        max(0, len(segment_track.points) - TRIM_REF_POINTS)
+        if reverse
+        else min(TRIM_REF_POINTS, len(segment_track.points) - 1)
+    )
     p_ref = segment_track.points[ref_idx]
 
-    # Cerchiamo se nella catena iniziale c'è un "gap" o un'inversione di distanza dal punto di riferimento
+    # Cerchiamo se nella catena iniziale c'e' un "gap" o un'inversione di distanza dal punto di riferimento
     best_start_idx = 0
     max_progress_ratio = -1.0
 
-    check_limit = min(30, len(chain))
+    check_limit = min(TRIM_CHECK_LIMIT, len(chain))
 
     for i in range(check_limit):
         seg_i, trk_i = chain[i]
@@ -358,27 +464,27 @@ def _trim_chain_start(
         d_start = haversine_distance(pt_track, p_start)
         d_ref = haversine_distance(pt_track, p_ref)
 
-        # Se il punto è vicino alla partenza, valutiamo quanto è proiettato verso l'interno del trail
+        # Se il punto e' vicino alla partenza, valutiamo quanto e' proiettato verso l'interno del trail
         if d_start <= DISTANCE_THRESHOLD_M:
             # Punteggio di vicinanza al prosieguo del trail
             score = (DISTANCE_THRESHOLD_M - d_start) + (DISTANCE_THRESHOLD_M - d_ref)
-            
-            # Se troviamo un punto che è sia vicino allo start sia nettamente più vicino al punto interno,
+
+            # Se troviamo un punto che e' sia vicino allo start sia nettamente piu vicino al punto interno,
             # lo preferiamo rispetto ai punti precedenti dove il ciclista si stava allontanando
             if score > max_progress_ratio:
                 max_progress_ratio = score
                 best_start_idx = i
 
-    # Se c'è un salto di indice di traccia anomalo tra due elementi vicini della catena iniziale,
+    # Se c'e' un salto di indice di traccia anomalo tra due elementi vicini della catena iniziale,
     # significa che il primo apparteneva al passaggio in salita e il secondo al passaggio in discesa!
-    for i in range(min(15, len(chain) - 1)):
+    for i in range(min(TRIM_INDEX_GAP, len(chain) - 1)):
         trk_curr = chain[i][1]
         trk_next = chain[i + 1][1]
-        
-        # Se c'è un "buco" temporale/di indici nella traccia > 15 punti mentre il segmento è all'inizio,
-        # l'ingresso vero è dopo il buco!
-        if trk_next - trk_curr > 15:
-            return chain[i + 1:]
+
+        # Se c'e' un "buco" temporale/di indici nella traccia > TRIM_INDEX_GAP punti mentre il segmento e' all'inizio,
+        # l'ingresso vero e' dopo il buco!
+        if trk_next - trk_curr > TRIM_INDEX_GAP:
+            return chain[i + 1 :]
 
     return chain[best_start_idx:]
 
@@ -420,13 +526,17 @@ def _find_occurrences(
     min_density: float = MIN_DENSITY,
     max_density: float = MAX_DENSITY,
     max_total_passes: int = 12,
-) -> List[Tuple[bool, int, int, float, List[Tuple[int, int]]]]:
-    """Trova tutte le occorrenze del segmento nella traccia."""
+) -> List[Tuple[bool, int, int, float, float, List[Tuple[int, int]]]]:
+    """Trova tutte le occorrenze del segmento nella traccia.
+
+    Returns:
+        List di (reverse, t0, t1, length_m, avg_dist_m, chain)
+    """
     n_seg = len(candidates)
     n_track = len(track_profile)
     seg_length = segment_profile[-1]
     used = np.zeros(n_track, dtype=bool)
-    occurrences: List[Tuple[bool, int, int, float, List[Tuple[int, int]]]] = []
+    occurrences: List[Tuple[bool, int, int, float, float, List[Tuple[int, int]]]] = []
 
     for reverse in (False, True):
         for _ in range(max_total_passes):
@@ -443,16 +553,25 @@ def _find_occurrences(
                 for j in range(1, len(arr)):
                     x = int(arr[j])
                     if x - prev > CLUSTER_GAP_IDX:
-                        for k in range(j, min(j + 5, len(arr))):
+                        # Rilevato un nuovo cluster di passaggi sulla traccia
+                        for k in range(j, min(j + ANCHOR_SCAN_RANGE, len(arr))):
                             anchor_pool.append(int(arr[k]))
                     prev = x
             anchors = list(dict.fromkeys(anchor_pool))
 
             found = False
             for s0 in anchors:
+                seg_pts_order = segment_track.points[::-1] if reverse else segment_track.points
                 chain = _walk_forward(
-                    masked, track_profile, profile, s0,
-                    max_gap, progress_ratio, progress_slack_m,
+                    masked,
+                    track_profile,
+                    profile,
+                    track.points,
+                    seg_pts_order,
+                    s0,
+                    max_gap,
+                    progress_ratio,
+                    progress_slack_m,
                 )
                 if not chain:
                     continue
@@ -472,7 +591,16 @@ def _find_occurrences(
                     continue
                 if not (min_density * seg_length <= length_m <= max_density * seg_length):
                     continue
-                occurrences.append((reverse, t0, t1, length_m, chain))
+
+                # Calcolo della distanza media geografica della catena per lo scoring
+                chain_dists = []
+                seg_pts = segment_track.points[::-1] if reverse else segment_track.points
+                for s_i, t_i in chain:
+                    d = haversine_distance(seg_pts[s_i], track.points[t_i])
+                    chain_dists.append(d)
+                avg_dist_m = float(np.mean(chain_dists)) if chain_dists else float("inf")
+
+                occurrences.append((reverse, t0, t1, length_m, avg_dist_m, chain))
                 used[t0 : t1 + 1] = True
                 found = True
                 break
@@ -524,7 +652,7 @@ def find_strava_segments_in_track(
             max_density=MAX_DENSITY,
         )
 
-        for reverse, t0_raw, t1_raw, length_m_raw, chain in occurrences:
+        for reverse, t0_raw, t1_raw, length_m_raw, avg_dist_m, chain in occurrences:
             if not reverse:
                 seg_start_lat = segment_track.points[0].latitude
                 seg_start_lon = segment_track.points[0].longitude
@@ -536,12 +664,12 @@ def find_strava_segments_in_track(
                 seg_end_lat = segment_track.points[0].latitude
                 seg_end_lon = segment_track.points[0].longitude
 
-            # t0_chain è garantito essere il punto effettivo post-trim e post-salto temporale
+            # t0_chain e' garantito essere il punto effettivo post-trim e post-salto temporale
             t0_chain = chain[0][1]
             t1_chain = chain[-1][1]
 
             # PROIEZIONE START (Usa t0_chain)
-            k_start, r_start, _ = _find_best_track_projection(
+            k_start, r_start, d_start = _find_best_track_projection(
                 track, seg_start_lat, seg_start_lon, t0_chain, window=PROJECTION_WINDOW
             )
 
@@ -549,25 +677,36 @@ def find_strava_segments_in_track(
             k_end, r_end, d_end = _find_best_track_projection(
                 track, seg_end_lat, seg_end_lon, t1_chain, window=PROJECTION_WINDOW
             )
+
+            # Proiezione END via valle (andata avanti) — preferita se valida
             k_valley, r_valley, d_valley = _find_first_gate_valley(
                 track, seg_end_lat, seg_end_lon, t1_chain,
                 max_extra_idx=END_PROJECTION_EXTRA_IDX,
                 accept_m=END_PROJECTION_ACCEPT_M,
                 exit_rise_m=END_PROJECTION_EXIT_RISE_M,
             )
+            if k_valley is not None and d_valley <= END_PROJECTION_ACCEPT_M:
+                k_end, r_end, d_end = k_valley, r_valley, d_valley
 
-            if (
-                d_valley <= END_PROJECTION_ACCEPT_M
-                and d_valley < d_end - END_PROJECTION_MIN_IMPROVE_M
-            ):
-                k_end, r_end = k_valley, r_valley
+            # Proiezione START via valle (andata indietro) — preferita se valida e
+            # geograficamente piu vicina della best-track (simmetria con la fine).
+            k_last_valley, r_last_valley, d_last_valley = _find_last_gate_valley(
+                track, seg_start_lat, seg_start_lon, t0_chain,
+                max_extra_idx=END_PROJECTION_EXTRA_IDX,
+                accept_m=END_PROJECTION_ACCEPT_M,
+                exit_rise_m=END_PROJECTION_EXIT_RISE_M,
+            )
+            # Preferiamo il valle se e' piu vicino del punto di start gia' proiettato
+            if k_last_valley is not None and d_last_valley <= END_PROJECTION_ACCEPT_M:
+                if d_start is None or d_start >= d_last_valley:
+                    k_start, r_start, d_start = k_last_valley, r_last_valley, d_last_valley
 
-            def _get_interp_time(k: int, r: float) -> Optional[float]:
-                ta = track.points[k].timestamp
-                tb = track.points[k + 1].timestamp
+            def _get_interp_time(k_val: int, r_val: float) -> Optional[float]:
+                ta = track.points[k_val].timestamp
+                tb = track.points[k_val + 1].timestamp
                 if not ta or not tb:
                     return None
-                return ta.timestamp() + r * (tb - ta).total_seconds()
+                return ta.timestamp() + r_val * (tb - ta).total_seconds()
 
             ts_start = _get_interp_time(k_start, r_start)
             ts_end = _get_interp_time(k_end, r_end)
@@ -576,8 +715,8 @@ def find_strava_segments_in_track(
             if ts_start is not None and ts_end is not None:
                 time_sec = abs(ts_end - ts_start)
 
-            t0 = min(k_start, k_end)
-            t1 = max(k_start + 1, k_end + 1)
+            t0 = min(int(k_start), int(k_end))
+            t1 = max(int(k_start) + 1, int(k_end) + 1)
             length_m = track_profile[t1] - track_profile[t0]
             sub_pts = track.points[t0 : t1 + 1]
 
@@ -615,6 +754,7 @@ def find_strava_segments_in_track(
                     "avg_speed": avg_speed,
                     "avg_alt": avg_alt,
                     "avg_hr": avg_hr,
+                    "avg_dist_m": avg_dist_m,
                     "slope": slope,
                     "coords": coords,
                     "direction": "reverse" if reverse else "forward",
@@ -623,14 +763,16 @@ def find_strava_segments_in_track(
                 }
             )
 
-    results.sort(key=lambda x: x["n_match_points"], reverse=True)
+    # Ordinamento per qualita' del match: priorita' alla vicinanza geografica (distanza media minore)
+    # e secondariamente al numero di punti matchati.
+    results.sort(key=lambda x: (x["avg_dist_m"], -x["n_match_points"]))
 
     final_results = []
     occupied = np.zeros(len(track.points), dtype=bool)
 
     for res in results:
         t0, t1 = res["start_idx"], res["end_idx"]
-        if np.sum(occupied[t0 : t1 + 1]) > 0.5 * (t1 - t0 + 1):
+        if np.sum(occupied[t0 : t1 + 1]) > OVERLAP_OCCUPANCY_THRESHOLD * (t1 - t0 + 1):
             continue
 
         final_results.append(res)
