@@ -1,10 +1,19 @@
 """Confronto tra i segmenti rilevati dall'algoritmo dell'app nei file Examples
 e quelli rilevati da Strava (test/esempio_tempo_segmenti.txt).
 
+Il PUNTEGGIO QUALITA' dell'algoritmo (recall/precisione/accuratezza temporale)
+è calcolato SOLO sui file .gpx: Strava importa i .fit del device e li
+rielabora, quindi la traccia riesportata può differire leggermente
+dall'originale (vedi test/pulisci_fit.py). I file .fit vengono comunque
+analizzati e mostrati SOLO come indice informativo; per le attività presenti
+in entrambi i formati (FIT+GPX della stessa pedalata) è riportata la sezione
+delle discrepanze di formato.
+
 Usage (dalla root del progetto):
     python test/confronto_segmenti.py
 """
 
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,8 +35,8 @@ STRAVA_TXT = ROOT / "test" / "esempio_tempo_segmenti.txt"
 # Pesi per il punteggio qualità (ottimizzazione di core/strava_analyzer.py)
 SCORE_W_RECALL = 0.35     # peso: quota passaggi Strava rilevati dall'algoritmo
 SCORE_W_PRECISION = 0.35  # peso: quota passaggi algoritmo senza extra spuri
-SCORE_W_TIME = 0.30       # peso: precisione temporale (delta medio vs Strava)
-TIME_TOLERANCE_S = 15.0   # delta (s) oltre il quale l'accuratezza temporale è 0
+SCORE_W_TIME = 0.30       # peso: precisione temporale (accuratezza su delta RMS vs Strava)
+TIME_TOLERANCE_S = 15.0   # delta RMS (s) oltre il quale l'accuratezza temporale è 0
 
 
 def normalize(name: str) -> str:
@@ -84,9 +93,11 @@ def main() -> None:
 
     strava = parse_strava_txt(STRAVA_TXT)
 
-    activity_files = sorted(
-        list(EXAMPLES_DIR.glob("*.gpx")) + list(EXAMPLES_DIR.glob("*.fit"))
-    )
+    # Il punteggio qualità usa solo i GPX; i FIT sono indice informativo.
+    gpx_files = sorted(EXAMPLES_DIR.glob("*.gpx"))
+    fit_files = sorted(EXAMPLES_DIR.glob("*.fit"))
+    activity_files = gpx_files + fit_files
+
     activities_diff = 0
     activities_no_delta = 0  # attività con tutti i delta accoppiati = 0 o < 1s
     total_seg_strava = 0
@@ -97,11 +108,15 @@ def main() -> None:
     matched_small = 0
     matched_off = 0
     total_paired = 0
-    sum_abs_delta_s = 0.0
+    sum_abs_delta_s = 0.0   # somma |delta| (per il delta medio, solo informativo)
+    sum_sq_delta_s = 0.0    # somma delta^2 (per il delta RMS usato nell'accuratezza)
+    max_abs_delta_s = 0.0   # peggior scostamento assoluto osservato
+    fmt_times = {}  # (stem, estensione) -> [(nome_norm, time_sec), ...] per invarianza formato
 
     print("=" * 78)
     for activity_file in activity_files:
-        if activity_file.suffix.lower() == ".fit":
+        is_gpx = activity_file.suffix.lower() == ".gpx"
+        if not is_gpx:
             track = load_fit(str(activity_file))
         else:
             track = load_gpx(str(activity_file))
@@ -112,10 +127,14 @@ def main() -> None:
              o["length_m"], o["start_dist_m"] / 1000.0)
             for o in found
         ]
+        fmt_times[(activity_file.stem, activity_file.suffix.lower())] = [
+            (f[0], f[1]) for f in found_norm
+        ]
         strava_list = strava.get(activity_file.name, [])  # (nome_norm, sec, nome_reale)
 
-        total_seg_strava += len(strava_list)
-        total_seg_algo += len(found_norm)
+        if is_gpx:  # solo i GPX entrano nel computo di qualità
+            total_seg_strava += len(strava_list)
+            total_seg_algo += len(found_norm)
 
         def min_delta_pairs(name):
             """Accoppia le occorrenze algoritmo/Strava dello stesso segmento
@@ -151,35 +170,45 @@ def main() -> None:
             for a, s in pairs:
                 ssec = s[1]
                 diff = a[1] - ssec
-                total_paired += 1
-                sum_abs_delta_s += abs(float(diff))
+                abs_diff = abs(float(diff))
+                if is_gpx:  # statistiche di qualità solo sui GPX
+                    total_paired += 1
+                    sum_abs_delta_s += abs_diff
+                    sum_sq_delta_s += abs_diff * abs_diff
+                    max_abs_delta_s = max(max_abs_delta_s, abs_diff)
                 if abs(diff) <= 3:
                     marker = "OK"
-                    matched_ok += 1
+                    if is_gpx:
+                        matched_ok += 1
                 elif abs(diff) <= 15:
                     marker = "~"
-                    matched_small += 1
+                    if is_gpx:
+                        matched_small += 1
                 else:
                     marker = "X"
-                    matched_off += 1
+                    if is_gpx:
+                        matched_off += 1
                 diff_line.append((a[2], diff, a[1], ssec, a[3], marker, a[4], a[5]))
             for s in s_left:
                 missing.append((s[2], s[1]))
             for a in a_left:
                 extra.append(a)
 
-        total_missing += len(missing)
-        total_extra += len(extra)
+        if is_gpx:
+            total_missing += len(missing)
+            total_extra += len(extra)
 
         has_diff = bool(missing) or bool(extra) or any(d[5] != "OK" for d in diff_line)
-        if has_diff:
+        if has_diff and is_gpx:
             activities_diff += 1
         # Attività senza scostamenti: tutti i delta accoppiati = 0 o < 1s
-        if diff_line and all(abs(d[1]) < 1 for d in diff_line):
+        if is_gpx and diff_line and all(abs(d[1]) < 1 for d in diff_line):
             activities_no_delta += 1
-        status = "OK" if not has_diff else "DIFF"
+        status = ("OK" if not has_diff else "DIFF") if is_gpx else "INDICE"
 
         print(f"\n### {activity_file.name}  [{status}]")
+        if not is_gpx:
+            print("    (file FIT: analizzato solo come indice, non entra nel punteggio)")
         print(f"    Strava:    {', '.join(f'{n} {fmt_time(s)}' for _, s, n in strava_list) or '(nessuno)'}")
         print(f"    Algoritmo: {', '.join(f'{n} {fmt_time(s)} ({d})' for _, s, n, d, _l, _k in found_norm) or '(nessuno)'}")
 
@@ -207,8 +236,13 @@ def main() -> None:
         else 0.0
     )
     mean_abs_delta = sum_abs_delta_s / total_paired if total_paired > 0 else 0.0
+    # Accuratezza temporale basata sul delta RMS (radice della media dei quadrati):
+    # a differenza della media semplice, penalizza in modo quadratico gli scostamenti
+    # grandi — anche quando la maggioranza dei passaggi è accurata. Scosti positivi e
+    # negativi non si compensano e gli outlier non vengono diluiti dalla media.
+    rms_delta = math.sqrt(sum_sq_delta_s / total_paired) if total_paired > 0 else 0.0
     time_acc_pct = (
-        max(0.0, 100.0 * (1.0 - mean_abs_delta / TIME_TOLERANCE_S))
+        max(0.0, 100.0 * (1.0 - rms_delta / TIME_TOLERANCE_S))
         if total_paired > 0
         else 0.0
     )
@@ -218,18 +252,64 @@ def main() -> None:
         + SCORE_W_TIME * time_acc_pct
     )
 
+    # --- Raggruppamento per attività comuni (stessa pedalata in FIT e GPX) ---
+    fmt_stems = {}
+    for stem, ext in fmt_times:
+        fmt_stems.setdefault(stem, []).append(ext)
+    paired_stems = sorted(s for s, e in fmt_stems.items() if len(e) >= 2)
+    n_paired_fit = len([s for s in paired_stems if (s, ".fit") in fmt_times])
+    fit_only_stems = sorted(
+        s for (s, e) in fmt_times if e == ".fit" and s not in paired_stems
+    )
+
     print("\nRIEPILOGO")
-    print(f"  Attività confrontate: {len(activity_files)} (con differenze: {activities_diff})")
-    print(f"  Attività senza scostamenti (delta = 0 o < 1s): {activities_no_delta}")
-    print(f"  Passaggi Strava totali: {total_seg_strava} | Passaggi algoritmo: {total_seg_algo}")
+    print(
+        f"  Attività GPX (base del punteggio): {len(gpx_files)} "
+        f"(con differenze: {activities_diff})"
+    )
+    print(f"  Attività senza scostamenti (delta < 1s): {activities_no_delta}")
+    print(
+        f"  Attività FIT (solo indice informativo): {len(fit_files)} "
+        f"| con coppia GPX: {n_paired_fit} | senza coppia: {len(fit_only_stems)}"
+    )
+    print(
+        f"  Passaggi Strava totali (solo GPX): {total_seg_strava} | "
+        f"Passaggi algoritmo (solo GPX): {total_seg_algo}"
+    )
     print(f"  Percorsi mancanti: {total_missing} | Percorsi extra: {total_extra}")
     print(f"  Tempi entro +/-3s:  {matched_ok}")
     print(f"  Tempi entro +/-15s: {matched_small}")
     print(f"  Tempi oltre +/-15s: {matched_off}")
-    print(f"\n  Punteggio qualità algoritmo: {quality_score:.1f}/100")
+    print(f"\n  Punteggio qualità algoritmo (calcolato sui soli GPX): {quality_score:.1f}/100")
     print(f"    Recall passaggi Strava:    {recall_pct:5.1f}%  ({total_seg_strava - total_missing}/{total_seg_strava})")
     print(f"    Precisione (no extra):     {precision_pct:5.1f}%")
-    print(f"    Accuratezza tempo:         {time_acc_pct:5.1f}%  (delta medio {mean_abs_delta:.2f}s)")
+    print(
+        f"    Accuratezza tempo:         {time_acc_pct:5.1f}%  "
+        f"(delta RMS {rms_delta:.2f}s, medio {mean_abs_delta:.2f}s, max {max_abs_delta_s:.2f}s)"
+    )
+
+    # --- Discrepanze di formato: stessa pedalata registrata in FIT e GPX ---
+    # Solo indice informativo: NON entra nel punteggio qualità.
+    if paired_stems:
+        print("\nDISCREPANZE FORMATO (FIT vs GPX della stessa pedalata; fuori dal punteggio)")
+        worst = 0.0
+        for stem in paired_stems:
+            la = sorted(fmt_times[(stem, ".fit")], key=lambda x: x[1])
+            lb = sorted(fmt_times[(stem, ".gpx")], key=lambda x: x[1])
+            if len(la) != len(lb):
+                print(f"  {stem}: occorrenze diverse fit={len(la)} gpx={len(lb)}")
+                continue
+            deltas = [abs(x[1] - y[1]) for x, y in zip(la, lb)] or [0.0]
+            worst = max(worst, max(deltas))
+            print(f"  {stem}: delta medio {sum(deltas)/len(deltas):5.2f}s  max {max(deltas):5.2f}s")
+        print(f"  Peggior delta formato: {worst:.2f}s")
+
+    # --- Attività FIT senza coppia GPX: solo elenco dei passaggi trovati ---
+    if fit_only_stems:
+        print("\nPASSAGGI TROVATI NEI FIT SENZA COPPIA GPX (solo indice)")
+        for stem in fit_only_stems:
+            lst = sorted(fmt_times[(stem, ".fit")], key=lambda x: x[1])
+            print(f"  {stem}.fit: " + (", ".join(f"{n} {fmt_time(t)}" for n, t in lst) or "(nessuno)"))
 
 
 if __name__ == "__main__":

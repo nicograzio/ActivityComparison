@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Ricerca dell'ottimo dei parametri di core/strava_analyzer.py.
 
-Ground truth: Examples/ (tracce), Strava_Segments/ (segmenti),
+Ground truth: Examples/*.gpx (solo GPX: i FIT sono rielaborati da Strava e
+usati solo come indice informativo), Strava_Segments/ (segmenti),
 test/esempio_tempo_segmenti.txt (tempi ufficiali Strava).
 
 Strategia (default, --method adaptive) — Adaptive Multi-Parameter Batch
@@ -34,6 +35,7 @@ Usage (dalla root):
 
 import argparse
 import json
+import math
 import random
 import re
 import sys
@@ -46,7 +48,6 @@ from typing import Dict, List, Optional, Tuple, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.strava_analyzer as sa  # noqa: E402
-from core.fit_loader import load_fit  # noqa: E402
 from core.gpx_loader import load_gpx  # noqa: E402
 from core.strava_analyzer import (  # noqa: E402
     find_strava_segments_in_track,
@@ -138,6 +139,7 @@ class Metrics:
     extra: int = 0
     paired: int = 0
     mean_abs_delta: float = 0.0
+    rms_delta: float = 0.0
     matched_ok: int = 0
     matched_small: int = 0
     matched_off: int = 0
@@ -148,7 +150,7 @@ class Metrics:
         return (
             f"Q={self.quality:5.1f}  rec={self.recall_pct:5.1f}%  "
             f"prec={self.precision_pct:5.1f}%  time={self.time_acc_pct:5.1f}%  "
-            f"(Δmedio={self.mean_abs_delta:.2f}s, mancanti={self.missing}, extra={self.extra})"
+            f"(ΔRMS={self.rms_delta:.2f}s, mancanti={self.missing}, extra={self.extra})"
         )
 
 
@@ -196,13 +198,12 @@ def fmt_time(sec) -> str:
 # CARICAMENTO DATI (una volta sola, poi riusati in ogni valutazione)
 # ---------------------------------------------------------------------------
 def load_activity_tracks() -> List[Tuple[str, Track]]:
-    files = sorted(list(EXAMPLES_DIR.glob("*.gpx")) + list(EXAMPLES_DIR.glob("*.fit")))
+    """Carica SOLO i .gpx di Examples/: il punteggio dell'ottimizzazione deve
+    coincidere con quello di test/confronto_segmenti.py, calcolato sui soli
+    GPX (i .fit sono rielaborati da Strava e usati solo come indice)."""
     loaded = []
-    for f in files:
-        if f.suffix.lower() == ".fit":
-            loaded.append((f.name, load_fit(str(f))))
-        else:
-            loaded.append((f.name, load_gpx(str(f))))
+    for f in sorted(EXAMPLES_DIR.glob("*.gpx")):
+        loaded.append((f.name, load_gpx(str(f))))
     return loaded
 
 
@@ -268,6 +269,7 @@ def evaluate(
         matched_off = 0
         total_paired = 0
         sum_abs_delta_s = 0.0
+        sum_sq_delta_s = 0.0  # somma delta^2 (per il delta RMS, come confronto_segmenti.py)
 
         for activity_name, track in activity_tracks:
             found = find_strava_segments_in_track(
@@ -312,7 +314,9 @@ def evaluate(
                 for a, s in pairs:
                     diff = a[1] - s[1]
                     total_paired += 1
-                    sum_abs_delta_s += abs(float(diff))
+                    abs_diff = abs(float(diff))
+                    sum_abs_delta_s += abs_diff
+                    sum_sq_delta_s += abs_diff * abs_diff
                     if abs(diff) <= 3:
                         matched_ok += 1
                     elif abs(diff) <= 15:
@@ -331,8 +335,12 @@ def evaluate(
             if total_seg_algo > 0 else 0.0
         )
         mean_abs_delta = sum_abs_delta_s / total_paired if total_paired > 0 else 0.0
+        # Accuratezza temporale sul delta RMS: formula identica a quella di
+        # test/confronto_segmenti.py (penalizza quadraticamente gli scostamenti
+        # grandi; scosti opposti non si compensano).
+        rms_delta = math.sqrt(sum_sq_delta_s / total_paired) if total_paired > 0 else 0.0
         time_acc_pct = (
-            max(0.0, 100.0 * (1.0 - mean_abs_delta / TIME_TOLERANCE_S))
+            max(0.0, 100.0 * (1.0 - rms_delta / TIME_TOLERANCE_S))
             if total_paired > 0 else 0.0
         )
         quality = (
@@ -346,7 +354,7 @@ def evaluate(
     return Metrics(
         quality=quality, recall_pct=recall_pct, precision_pct=precision_pct,
         time_acc_pct=time_acc_pct, missing=total_missing, extra=total_extra,
-        paired=total_paired, mean_abs_delta=mean_abs_delta,
+        paired=total_paired, mean_abs_delta=mean_abs_delta, rms_delta=rms_delta,
         matched_ok=matched_ok, matched_small=matched_small, matched_off=matched_off,
         config=dict(DEFAULTS, **overrides), elapsed_s=time.perf_counter() - t0,
     )
@@ -862,7 +870,7 @@ def print_report(
     print("\nMetriche dettagliate:")
     for label, m in (("Baseline", baseline), ("Ottimo", best)):
         print(f"  {label}: recall={m.recall_pct:.1f}%  precision={m.precision_pct:.1f}%  "
-              f"time_acc={m.time_acc_pct:.1f}%  Δmedio={m.mean_abs_delta:.2f}s  "
+              f"time_acc={m.time_acc_pct:.1f}%  ΔRMS={m.rms_delta:.2f}s  Δmedio={m.mean_abs_delta:.2f}s  "
               f"mancanti={m.missing}  extra={m.extra}  "
               f"entro3s={m.matched_ok}  entro15s={m.matched_small}  oltre15s={m.matched_off}")
 
@@ -1021,6 +1029,7 @@ def main() -> None:
                 "recall_pct": baseline.recall_pct,
                 "precision_pct": baseline.precision_pct,
                 "time_acc_pct": baseline.time_acc_pct,
+                "rms_delta_s": baseline.rms_delta,
                 "mean_abs_delta_s": baseline.mean_abs_delta,
                 "missing": baseline.missing,
                 "extra": baseline.extra,
@@ -1031,6 +1040,7 @@ def main() -> None:
                 "recall_pct": best.recall_pct,
                 "precision_pct": best.precision_pct,
                 "time_acc_pct": best.time_acc_pct,
+                "rms_delta_s": best.rms_delta,
                 "mean_abs_delta_s": best.mean_abs_delta,
                 "missing": best.missing,
                 "extra": best.extra,

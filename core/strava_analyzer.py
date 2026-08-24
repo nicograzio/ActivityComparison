@@ -18,21 +18,21 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
 # Soglia di vicinanza GPS per considerare un punto di traccia come candidato
-DISTANCE_THRESHOLD_M = 45.0
+DISTANCE_THRESHOLD_M = 30.0
 # Numero minimo di punti di traccia che devono coincidere con il segmento
-MIN_MATCH_POINTS = 4
+MIN_MATCH_POINTS = 5
 # Rapporto per definire la tolleranza di inizio (in base ai punti totali)
-START_TOL_RATIO = 0.15
+START_TOL_RATIO = 0.5
 # Rapporto per definire la tolleranza di fine (in base ai punti totali)
-END_TOL_RATIO = 0.15
+END_TOL_RATIO = 0
 # Rapporto massimo di gap (punti segmento senza candidati) rispetto al totale
-MAX_GAP_RATIO = 0.20
+MAX_GAP_RATIO = 0.3
 # Distanza minima tra indici di traccia per raggruppare i candidati (anchors)
-CLUSTER_GAP_IDX = 40
+CLUSTER_GAP_IDX = 10
 
 # Parametri per la coerenza del progresso lungo il segmento
-PROGRESS_RATIO = 2.5
-PROGRESS_SLACK_M = 30.0
+PROGRESS_RATIO = 0
+PROGRESS_SLACK_M = 20
 
 # Parametri di densita' e lunghezza per la validita' di un'occorrenza
 MIN_DENSITY = 0.5
@@ -40,36 +40,48 @@ MAX_DENSITY = 1.5
 MIN_LENGTH_M = 20.0
 
 # Parametri per la proiezione fine dei tempi di inizio/fine
-PROJECTION_WINDOW = 20
+PROJECTION_WINDOW = 0
 # Indice di scansione per trovare il valle della fine (ridotto da 150)
-END_PROJECTION_EXTRA_IDX = 120
-END_PROJECTION_ACCEPT_M = 45.0
-END_PROJECTION_EXIT_RISE_M = 10.0
-END_PROJECTION_MIN_IMPROVE_M = 0.1
+END_PROJECTION_EXTRA_IDX = 1500
+END_PROJECTION_ACCEPT_M = 25.0
+END_PROJECTION_EXIT_RISE_M = 6.0
+END_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la proiezione dello START (simmetrici a quelli della fine).
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
 # del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
-START_PROJECTION_EXTRA_IDX = 120#60
-START_PROJECTION_ACCEPT_M = 45.0#35.0
-START_PROJECTION_EXIT_RISE_M = 10.0#3.0
+START_PROJECTION_EXTRA_IDX = 1500
+START_PROJECTION_ACCEPT_M = 25.0
+START_PROJECTION_EXIT_RISE_M = 3.0
 # Miglioramento minimo (metri) che il valle deve garantire rispetto al punto
 # proiettato localmente prima di essere preferito (anti-rumore GPS).
-START_PROJECTION_MIN_IMPROVE_M = 0.1
+START_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la gestione degli ingressi e passaggi spuri
-TRIM_REF_POINTS = 4
-TRIM_CHECK_LIMIT = 30
-TRIM_INDEX_GAP = 15
+TRIM_REF_POINTS = 5
+TRIM_CHECK_LIMIT = 1800
+TRIM_INDEX_GAP = 10
 
 # Parametri per il raggruppamento degli anchor point iniziali
-ANCHOR_SCAN_RANGE = 5
+ANCHOR_SCAN_RANGE = 20
 
 # Parametri algoritmi di selezione
-STATIONARY_SPEED_KMH = 0.5
-OVERLAP_OCCUPANCY_THRESHOLD = 0.5
+STATIONARY_SPEED_KMH = 0.1
+OVERLAP_OCCUPANCY_THRESHOLD = 0.4
 # Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
-MAX_TOTAL_PASSES = 12
+MAX_TOTAL_PASSES = 5
+# Tolleranza (metri) oltre il minimo oltre cui due candidati sono considerati
+# "in tie" sull'altipiano di jitter GPS: START tiene il piu' antico (ingresso
+# nel geofence), END il piu' recente (uscita), rendendo il risultato
+# indipendente dal centro della catena e dal formato (FIT vs GPX).
+TIE_EPS_M = 0.9
+# Distanza massima (metri) per accettare comunque il valle anche se oltre
+# ACCEPT_M: preferisce il minimo reale alla proiezione locale della catena.
+HARD_ACCEPT_M = 45.0
+# Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
+# interpolazione lineare del tempo sul gate e' disattivata (smart recording /
+# pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
+MAX_INTERP_GAP_S = 0.0
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -175,18 +187,20 @@ def _find_first_gate_valley(
     accept_m: float,
     exit_rise_m: float,
 ) -> Tuple[Optional[int], float, float]:
-    """Trova il primo avvallamento della distanza gate-traccia in uscita.
+    """Trova il valle della distanza gate-traccia andando AVANTI dal centro.
 
-    Partendo dal centro (minimo geografico) va AVANTI nella traccia cercando
-    il primo punto che dista meno dal target, rompendo quando la distanza
-    risalita supera `exit_rise_m`. Serve a proiettare il FINE del segmento.
+    Usato per il FINE del segmento. Su un "altipiano" di distanze quasi
+    uguali (jitter GPS attorno al gate) sceglie il candidato PIU' RECENTE
+    (ultima uscita dall'area del gate), emulando il geofence-exit di Strava
+    e rendendo il risultato indipendente dal punto in cui parte la scansione
+    e dal campionamento (FIT vs GPX).
     """
     start_k = max(0, center_idx)
     end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
 
-    best_k: Optional[int] = None
-    best_r = 0.0
-    best_d = float("inf")
+    accept_limit = max(accept_m, HARD_ACCEPT_M)
+    seen: List[Tuple[int, float, float]] = []  # (k, r, d)
+    run_min = float("inf")
 
     for k in range(start_k, end_k + 1):
         speed = _track_segment_kmh(track, k)
@@ -203,16 +217,23 @@ def _find_first_gate_valley(
         p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
         d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
 
-        if best_k is None or d < best_d:
-            best_k = k
-            best_r = r
-            best_d = d
-        elif d - best_d > exit_rise_m and best_d <= accept_m:
+        seen.append((k, r, d))
+        if d < run_min:
+            run_min = d
+        elif d - run_min > exit_rise_m and run_min <= accept_limit:
             break
 
-    if best_k is not None and best_d <= accept_m:
-        return best_k, best_r, best_d
-    return None, 0.0, float("inf")
+    if not seen:
+        return None, 0.0, float("inf")
+
+    best_d = min(s[2] for s in seen)
+    if not (best_d <= accept_m or best_d <= HARD_ACCEPT_M):
+        return None, 0.0, float("inf")
+
+    # Tie-break: mediana del run contiguo contenente il minimo (stabile tra
+    # formati ed estremi evitati: ne primo ingresso ne ultima uscita netta)
+    k_sel, r_sel, d_sel = _median_tie_selection(seen, best_d)
+    return k_sel, r_sel, d_sel
 
 
 def _find_last_gate_valley(
@@ -224,19 +245,20 @@ def _find_last_gate_valley(
     accept_m: float,
     exit_rise_m: float,
 ) -> Tuple[Optional[int], float, float]:
-    """Trova l'ultimo avvallamento della distanza gate-traccia andando indietro.
+    """Trova il valle della distanza gate-traccia andando INDIETRO dal centro.
 
-    Mirror di `_find_first_gate_valley`: parte dal centro (minimo geografico) e va
-    INDIETRO nella traccia cercando il primo punto che dista meno dal target,
-    rompendo quando la distanza risalita supera `exit_rise_m`. Serve a proiettare
-    l'INIZIO del segmento in modo simmetrico a `_find_first_gate_valley`.
+    Usato per l'INIZIO del segmento (mirror di `_find_first_gate_valley`).
+    Su un "altipiano" di distanze quasi uguali (jitter GPS) sceglie il
+    candidato PIU' ANTICO (primo ingresso nell'area del gate), emulando il
+    geofence-enter di Strava e rendendo il risultato indipendente dal punto
+    in cui parte la scansione e dal campionamento (FIT vs GPX).
     """
     start_k = max(0, center_idx - max_extra_idx)
     end_k = min(len(track.points) - 2, center_idx)
 
-    best_k: Optional[int] = None
-    best_r = 0.0
-    best_d = float("inf")
+    accept_limit = max(accept_m, HARD_ACCEPT_M)
+    seen: List[Tuple[int, float, float]] = []  # (k, r, d)
+    run_min = float("inf")
 
     for k in range(end_k, start_k - 1, -1):
         speed = _track_segment_kmh(track, k)
@@ -253,16 +275,40 @@ def _find_last_gate_valley(
         p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
         d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
 
-        if best_k is None or d < best_d:
-            best_k = k
-            best_r = r
-            best_d = d
-        elif d - best_d > exit_rise_m and best_d <= accept_m:
+        seen.append((k, r, d))
+        if d < run_min:
+            run_min = d
+        elif d - run_min > exit_rise_m and run_min <= accept_limit:
             break
 
-    if best_k is not None and best_d <= accept_m:
-        return best_k, best_r, best_d
-    return None, 0.0, float("inf")
+    if not seen:
+        return None, 0.0, float("inf")
+
+    best_d = min(s[2] for s in seen)
+    if not (best_d <= accept_m or best_d <= HARD_ACCEPT_M):
+        return None, 0.0, float("inf")
+
+    # Tie-break: mediana del run contiguo contenente il minimo (stabile tra
+    # formati ed estremi evitati: ne primo ingresso ne ultima uscita netta)
+    k_sel, r_sel, d_sel = _median_tie_selection(seen, best_d)
+    return k_sel, r_sel, d_sel
+
+
+def _median_tie_selection(
+    seen: List[Tuple[int, float, float]], best_d: float
+) -> Tuple[int, float, float]:
+    """Sceglie, tra i candidati quasi-equidistanti dal gate, il punto mediano
+    del run contiguo di indici che contiene il minimo assoluto."""
+    tie = sorted(s for s in seen if s[2] <= best_d + TIE_EPS_M)
+    k_argmin = min(tie, key=lambda s: s[2])[0]
+    groups: List[List[Tuple[int, float, float]]] = [[tie[0]]]
+    for prev, item in zip(tie, tie[1:]):
+        if item[0] - prev[0] <= 2:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+    chosen = next(g for g in groups if any(s[0] == k_argmin for s in g))
+    return chosen[len(chosen) // 2]
 
 
 def load_strava_segments(folder_path: str) -> List[dict]:
@@ -687,19 +733,15 @@ def find_strava_segments_in_track(
                 track, seg_end_lat, seg_end_lon, t1_chain, window=PROJECTION_WINDOW
             )
 
-            # Proiezione END: il valle in avanti e' preferito solo se migliora in
-            # modo significativo (MIN_IMPROVE) il punto proiettato localmente.
+            # Proiezione END: valle in avanti con selezione deterministica
+            # (tie-break a mediana, accept esteso fino a HARD_ACCEPT_M).
             k_valley, r_valley, d_valley = _find_first_gate_valley(
                 track, seg_end_lat, seg_end_lon, t1_chain,
                 max_extra_idx=END_PROJECTION_EXTRA_IDX,
                 accept_m=END_PROJECTION_ACCEPT_M,
                 exit_rise_m=END_PROJECTION_EXIT_RISE_M,
             )
-            if (
-                k_valley is not None
-                and d_valley <= END_PROJECTION_ACCEPT_M
-                and d_end - d_valley >= END_PROJECTION_MIN_IMPROVE_M
-            ):
+            if k_valley is not None:
                 k_end, r_end, d_end = k_valley, r_valley, d_valley
 
             # Proiezione START: valle all'indietro con i parametri dedicati
@@ -711,24 +753,31 @@ def find_strava_segments_in_track(
                 accept_m=START_PROJECTION_ACCEPT_M,
                 exit_rise_m=START_PROJECTION_EXIT_RISE_M,
             )
-            # Preferiamo il valle solo se migliora in modo significativo il punto
-            # di start gia' proiettato (anti-rumore GPS).
-            if (
-                k_last_valley is not None
-                and d_last_valley <= START_PROJECTION_ACCEPT_M
-                and d_start - d_last_valley >= START_PROJECTION_MIN_IMPROVE_M
-            ):
+            # Valle autoritativa anche per lo start: la selezione interna e'
+            # deterministica, il punto-catena non influenza piu' il risultato.
+            if k_last_valley is not None:
                 k_start, r_start, d_start = k_last_valley, r_last_valley, d_last_valley
 
-            def _get_interp_time(k_val: int, r_val: float) -> Optional[float]:
+            def _get_interp_time(k_val: int, r_val: float, mode: str) -> Optional[float]:
                 ta = track.points[k_val].timestamp
                 tb = track.points[k_val + 1].timestamp
                 if not ta or not tb:
                     return None
-                return ta.timestamp() + r_val * (tb - ta).total_seconds()
+                gap_s = (tb - ta).total_seconds()
+                if gap_s > MAX_INTERP_GAP_S:
+                    # Buco di campionamento (smart recording/pausa). Snap al
+                    # bordo del buco SOLO se la proiezione spaziale concorda
+                    # (gate oltre meta' del segmento verso quel bordo);
+                    # altrimenti interpolazione lineare costante.
+                    if mode == "start":
+                        if r_val > 0.5:
+                            return tb.timestamp()
+                    elif r_val < 0.5:
+                        return ta.timestamp()
+                return ta.timestamp() + r_val * gap_s
 
-            ts_start = _get_interp_time(k_start, r_start)
-            ts_end = _get_interp_time(k_end, r_end)
+            ts_start = _get_interp_time(k_start, r_start, "start")
+            ts_end = _get_interp_time(k_end, r_end, "end")
 
             time_sec = None
             if ts_start is not None and ts_end is not None:
@@ -779,6 +828,10 @@ def find_strava_segments_in_track(
                     "direction": "reverse" if reverse else "forward",
                     "n_match_points": len(chain),
                     "segment_point_count": n_seg,
+                    "start_gate_idx": int(k_start),
+                    "end_gate_idx": int(k_end),
+                    "gate_d_start_m": float(d_start),
+                    "gate_d_end_m": float(d_end),
                 }
             )
 
