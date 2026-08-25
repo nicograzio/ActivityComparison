@@ -42,15 +42,15 @@ MIN_LENGTH_M = 20.0
 # Parametri per la proiezione fine dei tempi di inizio/fine
 PROJECTION_WINDOW = 0
 # Indice di scansione per trovare il valle della fine (ridotto da 150)
-END_PROJECTION_EXTRA_IDX = 1500
+END_PROJECTION_EXTRA_IDX = 20
 END_PROJECTION_ACCEPT_M = 25.0
-END_PROJECTION_EXIT_RISE_M = 6.0
+END_PROJECTION_EXIT_RISE_M = 7.682230450012804
 END_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la proiezione dello START (simmetrici a quelli della fine).
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
 # del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
-START_PROJECTION_EXTRA_IDX = 1500
+START_PROJECTION_EXTRA_IDX = 150
 START_PROJECTION_ACCEPT_M = 25.0
 START_PROJECTION_EXIT_RISE_M = 3.0
 # Miglioramento minimo (metri) che il valle deve garantire rispetto al punto
@@ -58,15 +58,15 @@ START_PROJECTION_EXIT_RISE_M = 3.0
 START_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la gestione degli ingressi e passaggi spuri
-TRIM_REF_POINTS = 5
+TRIM_REF_POINTS = 6
 TRIM_CHECK_LIMIT = 1800
-TRIM_INDEX_GAP = 10
+TRIM_INDEX_GAP = 13
 
 # Parametri per il raggruppamento degli anchor point iniziali
 ANCHOR_SCAN_RANGE = 20
 
 # Parametri algoritmi di selezione
-STATIONARY_SPEED_KMH = 0.1
+STATIONARY_SPEED_KMH = 1.333333333333
 OVERLAP_OCCUPANCY_THRESHOLD = 0.4
 # Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
 MAX_TOTAL_PASSES = 5
@@ -81,7 +81,7 @@ HARD_ACCEPT_M = 45.0
 # Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
 # interpolazione lineare del tempo sul gate e' disattivata (smart recording /
 # pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
-MAX_INTERP_GAP_S = 0.0
+MAX_INTERP_GAP_S = 3.3333333333333335
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -496,11 +496,14 @@ def _trim_chain_start(
         return chain
 
     # Prendiamo il punto di inizio e un punto di riferimento leggermente avanzato nel segmento
+    n_seg_pts = len(segment_track.points)
     p_start = segment_track.points[-1 if reverse else 0]
+    # Clamp agli indici validi: valori degeneri del parametro (es. 0 o negativi,
+    # esplorati dall'ottimizzatore) non devono produrre un IndexError.
     ref_idx = (
-        max(0, len(segment_track.points) - TRIM_REF_POINTS)
+        max(0, min(n_seg_pts - 1, n_seg_pts - int(TRIM_REF_POINTS)))
         if reverse
-        else min(TRIM_REF_POINTS, len(segment_track.points) - 1)
+        else max(0, min(int(TRIM_REF_POINTS), n_seg_pts - 1))
     )
     p_ref = segment_track.points[ref_idx]
 

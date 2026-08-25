@@ -5,30 +5,35 @@ Ground truth: Examples/*.gpx (solo GPX: i FIT sono rielaborati da Strava e
 usati solo come indice informativo), Strava_Segments/ (segmenti),
 test/esempio_tempo_segmenti.txt (tempi ufficiali Strava).
 
-Strategia (default, --method adaptive) — Adaptive Multi-Parameter Batch
-Search (AMBS):
-  * dead-param PRELIMINARI: i parametri non-sensibili (test min/max) vengono
-    esclusi subito dalle mutazioni (riduce il rumore);
-  * ogni batch genera N candidati: ~35% muta UN SOLO parametro (affinamento
-    locale), il resto muta 2-5 parametri INSIEME (esplorazione interazioni);
-  * per ogni parametro il nuovo valore viene campionato da un range dinamico:
-    sigma (in passi di griglia) parte ampio e si adatta con la regola 1/5
-    (successo > 20% → espande, < 15% → restringe);
-  * i parametri mai coinvolti in un miglioramento vengono esclusi;
-  * restart da punti casuali per sfuggire agli ottimi locali;
-  * stop automatico su convergenza: pazienza (batch consecutivi senza
-    miglioramento), finestra (miglioramento cumulativo trascurabile),
-    sigma minimo, budget massimo;
-  * polish finale: ±1 passo di griglia su ogni parametro.
+Strategia (default, --method refine) — ricerca continua coarse-to-fine:
+  * ogni parametro ha un INTERVALLO CONTINUO (PARAM_BOUNDS): nessun elenco
+    predefinito di valori, quindi l'ottimo è raggiungibile anche quando non
+    coincide con alcun valore scelto "a mano";
+  * fase A1 sweep 1-D: K valori per parametro sparsi su TUTTO il range →
+    profilo di sensibilità ed esclusione dei parametri non sensibili;
+  * fase A2 discesa greedy: applica in sequenza i migliori punti dello sweep,
+    tenendo solo quelli che migliorano davvero (interazioni sequenziali);
+  * fase A3 esplorazione congiunta (Latin Hypercube): configurazioni che
+    variano tutti i parametri attivi insieme;
+  * fase B affinamento iterativo: attorno al best corrente ogni parametro ha
+    un intervallo che si RESTRINGE ad ogni round (fattore adattivo sul tasso
+    di successo) e i nuovi valori sono campionati UNIFORMEMENTE dentro
+    l'intervallo: si affina proprio dove si vedono i miglioramenti;
+  * stop quando ogni intervallo scende sotto la risoluzione minima (gli interi
+    convergono al valore esatto) oppure su pazienza/budget;
+  * polish finale continuo: ±passo di risoluzione per ogni parametro.
 
-Strategia alternativa (--method classic): coordinate descent → random search.
+Strategie alternative (su griglie discrete, per confronto):
+    --method adaptive  AMBS: batch evolutivi con sigma dinamico in passi di griglia
+    --method classic   coordinate descent + random search
 
 Usage (dalla root):
-    python test/ottimizza_parametri.py              # media (adaptive)
+    python test/ottimizza_parametri.py              # media (refine, default)
     python test/ottimizza_parametri.py --quick      # veloce
     python test/ottimizza_parametri.py --deep       # approfondita
     python test/ottimizza_parametri.py --baseline   # solo baseline + dead-param
     python test/ottimizza_parametri.py --export test/params_ottimi.json
+    python test/ottimizza_parametri.py --method adaptive   # vecchio motore
     python test/ottimizza_parametri.py --method classic
     python test/ottimizza_parametri.py -q           # output compatto
 """
@@ -81,6 +86,7 @@ PARAM_NAMES: List[str] = [
     "START_PROJECTION_MIN_IMPROVE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", "MAX_TOTAL_PASSES",
+    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S",
 ]
 
 DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
@@ -114,7 +120,96 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "STATIONARY_SPEED_KMH": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     "OVERLAP_OCCUPANCY_THRESHOLD": [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
     "MAX_TOTAL_PASSES": [4, 6, 8, 10, 12, 16, 20, 24],
+    "TIE_EPS_M": [0.0, 0.3, 0.6, 0.9, 1.2, 1.8, 2.5, 4.0],
+    "HARD_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 55.0, 70.0, 90.0],
+    "MAX_INTERP_GAP_S": [0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0],
 }
+
+# Range continui di ricerca (--method refine). A differenza delle griglie
+# sopra, qui ogni parametro può assumere QUALSIASI valore nell'intervallo:
+# la ricerca parte ampia e poi affina intorno ai valori che danno
+# miglioramento, così l'ottimo viene raggiunto anche se non coincide con
+# alcun valore scelto a mano. Gli estremi derivano dalle griglie storiche
+# (±~10% della larghezza) con estensioni mirate dove aveva senso
+# (es. STATIONARY_SPEED_KMH: l'ottimo precedente era sul bordo della griglia).
+# Nota: alcuni default storici del modulo restano volutamente FUORI dal range
+# (es. START_TOL_RATIO 0.5, PROJECTION_WINDOW 0, *_EXTRA_IDX 1500,
+# TRIM_CHECK_LIMIT 1800): sono valori che disattivano le rispettive
+# funzionalità, non candidati plausibili per l'ottimo.
+PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
+    "DISTANCE_THRESHOLD_M": (20.0, 70.0),
+    "MIN_MATCH_POINTS": (0.0, 10.0),
+    "START_TOL_RATIO": (0.0, 0.5),
+    "END_TOL_RATIO": (0.0, 0.5),
+    "MAX_GAP_RATIO": (0.0, 0.6),
+    "CLUSTER_GAP_IDX": (0.0, 100.0),
+    "PROGRESS_RATIO": (0.0, 5.0),
+    "PROGRESS_SLACK_M": (0.0, 75.0),
+    "MIN_DENSITY": (0.1, 0.9),
+    "MAX_DENSITY": (1.0, 2.5),
+    "MIN_LENGTH_M": (0.0, 44.0),
+    "PROJECTION_WINDOW": (0.0, 120.0),
+    "END_PROJECTION_EXTRA_IDX": (20.0, 150.0),
+    "END_PROJECTION_ACCEPT_M": (0.0, 90.0),
+    "END_PROJECTION_EXIT_RISE_M": (0.0, 30.0),
+    "END_PROJECTION_MIN_IMPROVE_M": (0.0, 5.5),
+    "START_PROJECTION_EXTRA_IDX": (20.0, 150.0),
+    "START_PROJECTION_ACCEPT_M": (0.0, 90.0),
+    "START_PROJECTION_EXIT_RISE_M": (0.0, 30.0),
+    "START_PROJECTION_MIN_IMPROVE_M": (0.0, 5.5),
+    # NB: lower bound 1 (e non 0): con 0 punti di riferimento il trim perde di
+    # significato e la ricerca continuativa genererebbe configurazioni degeneri.
+    "TRIM_REF_POINTS": (1.0, 25.0),
+    "TRIM_CHECK_LIMIT": (0.0, 75.0),
+    "TRIM_INDEX_GAP": (0.0,30.0),
+    "ANCHOR_SCAN_RANGE": (0.0, 20.0),
+    "STATIONARY_SPEED_KMH": (0.0, 4.0),
+    "OVERLAP_OCCUPANCY_THRESHOLD": (0.1, 0.85),
+    "MAX_TOTAL_PASSES": (2.0, 5.0),
+    # Finestra di tie-break (m) nella selezione mediana delle proiezioni gate
+    "TIE_EPS_M": (0.0, 5.0),
+    # Tetto rigido di accettazione (m) per le valli di proiezione start/end
+    "HARD_ACCEPT_M": (18.0, 99.0),
+    # Soglia (s) oltre cui un buco di campionamento fa snap invece che interp.
+    "MAX_INTERP_GAP_S": (0.0, 20.0),
+}
+
+
+def param_min_step(name: str) -> float:
+    """Risoluzione minima significativa per il parametro `name`.
+
+    Gli interi hanno passo 1 (la ricerca converge al valore esatto); i float
+    hanno una risoluzione pari a ~0.4% della larghezza del range, quindi
+    l'affinamento può scendere fino a quella precisione.
+    """
+    lo, hi = PARAM_BOUNDS[name]
+    if name in INT_PARAMS:
+        return 1.0
+    return max((hi - lo) * 0.004, 1e-4)
+
+
+def _clip_bound(name: str, value: float) -> float:
+    """Clip ai bounds di `name`; arrotonda a intero per i parametri interi."""
+    lo, hi = PARAM_BOUNDS[name]
+    v = min(hi, max(lo, float(value)))
+    return float(round(v)) if name in INT_PARAMS else v
+
+
+def _fix_density_constraint(cfg: Dict[str, float]) -> None:
+    """Garantisce MIN_DENSITY < MAX_DENSITY aggiustando la coppia sul posto.
+
+    Viene chiamata PRIMA di ogni valutazione: correggere qui non costa
+    nessuna valutazione sprecata.
+    """
+    lo = cfg.get("MIN_DENSITY")
+    hi = cfg.get("MAX_DENSITY")
+    if lo is None or hi is None:
+        return
+    if float(lo) >= float(hi) - 0.02:
+        mid = (float(lo) + float(hi)) / 2.0
+        cfg["MIN_DENSITY"] = mid - 0.01
+        cfg["MAX_DENSITY"] = mid + 0.01
+
 
 # Parametri più influenti → testati per primi nel coordinate descent (classic)
 CRITICAL_PARAMS = [
@@ -123,6 +218,7 @@ CRITICAL_PARAMS = [
     "MIN_LENGTH_M", "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
     "START_PROJECTION_ACCEPT_M", "START_PROJECTION_EXIT_RISE_M",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD",
+    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S",
 ]
 
 
@@ -707,40 +803,39 @@ def polish_pass(
     strava: Dict[str, List[Tuple[str, int, str]]],
     segments: List[dict],
     quiet: bool = False,
+    max_rounds: int = 3,
 ) -> Tuple[Metrics, int]:
-    """Affinamento locale: prova ±1 passo di griglia per ogni parametro.
+    """Affinamento locale continuo: prova ±passo di risoluzione per ogni
+    parametro (e multipli, con granularità decrescente round dopo round),
+    sempre dentro i suoi bounds.
 
-    Complementare alla ricerca congiunta: garantisce che ogni coordinata
-    singola sia all'ottimo locale (almeno rispetto alla griglia).
+    A differenza della versione a griglia, il passo è continuo (~0.4% del
+    range; 1 unità per gli interi), quindi verifica l'ottimalità locale anche
+    in punti che non appartengono a nessun elenco predefinito di valori.
     """
-    grids: Dict[str, List[float]] = {
-        name: list(SEARCH_SPACE[name])
-        for name in PARAM_NAMES
-        if len(SEARCH_SPACE.get(name, [])) > 1
-    }
     best = evaluate(base_config, activity_tracks, strava, segments)
     n_evals = 1
+    current = dict(best.config)
 
-    grid_idx: Dict[str, int] = {
-        name: _nearest_grid_index(grid, base_config.get(name, DEFAULTS[name]))
-        for name, grid in grids.items()
-    }
-
-    for rnd in range(1, 4):
+    for rnd in range(1, max_rounds + 1):
         improved = False
-        for name, grid in grids.items():
-            idx = grid_idx[name]
-            for delta in (-1, 1):
-                ni = idx + delta
-                if ni < 0 or ni >= len(grid):
+        for name in PARAM_NAMES:
+            if name not in PARAM_BOUNDS:
+                continue
+            base_step = param_min_step(name)
+            step = max(base_step, base_step * 2.0 ** (1 - rnd))
+            for sgn in (-1.0, 1.0):
+                cur_val = float(current.get(name, DEFAULTS[name]))
+                v = _clip_bound(name, cur_val + sgn * step)
+                if abs(v - cur_val) < 1e-12:
                     continue
-                cand = dict(best.config)
-                cand[name] = grid[ni]
+                cand = dict(current)
+                cand[name] = v
                 m = evaluate(cand, activity_tracks, strava, segments)
                 n_evals += 1
                 if m.quality > best.quality + 1e-9:
                     best = m
-                    grid_idx[name] = ni
+                    current = dict(m.config)
                     improved = True
         if not quiet:
             print(f"      [polish] round {rnd} → {best.short()}")
@@ -771,17 +866,24 @@ def detect_dead_params(
     non_sensibili: List[str] = []
     baseline = evaluate({}, activity_tracks, strava, segments)
     for name in PARAM_NAMES:
-        grid = SEARCH_SPACE.get(name, [])
-        if not grid:
-            # Parametro senza griglia: campione molto diverso dal default.
-            base_val = DEFAULTS[name]
-            sample = base_val * 2 + 1 if isinstance(base_val, float) else base_val + 3
-            samples = [float(sample)]
+        if name in PARAM_BOUNDS:
+            # Range continuo: proviamo gli estremi (più 1 medio se ha senso)
+            blo, bhi = PARAM_BOUNDS[name]
+            samples = [float(blo), float(bhi)]
+            if bhi - blo > 2.0 * param_min_step(name):
+                samples.insert(1, (blo + bhi) / 2.0)
         else:
-            # Proviamo il minimo e il massimo della griglia (più 1 medio se c'è)
-            samples = [float(grid[0]), float(grid[-1])]
-            if len(grid) > 2:
-                samples.append(float(grid[len(grid) // 2]))
+            grid = SEARCH_SPACE.get(name, [])
+            if not grid:
+                # Parametro senza range né griglia: campione molto diverso dal default.
+                base_val = DEFAULTS[name]
+                sample = base_val * 2 + 1 if isinstance(base_val, float) else base_val + 3
+                samples = [float(sample)]
+            else:
+                # Proviamo il minimo e il massimo della griglia (più 1 medio se c'è)
+                samples = [float(grid[0]), float(grid[-1])]
+                if len(grid) > 2:
+                    samples.append(float(grid[len(grid) // 2]))
 
         insensibile = True
         for sample in samples:
@@ -791,7 +893,9 @@ def detect_dead_params(
                 break
 
         if insensibile:
-            if not grid:
+            # "non usato" = né range continuo né griglia (il codice non lo legge);
+            # con i range definiti per tutti i parametri, resta un caso limite.
+            if name not in PARAM_BOUNDS and not SEARCH_SPACE.get(name):
                 non_usati.append(name)
             else:
                 non_sensibili.append(name)
@@ -876,6 +980,285 @@ def print_report(
 
 
 # ---------------------------------------------------------------------------
+# MOTORE DI RICERCA — CONTINUA COARSE-TO-FINE (refine, default)
+# ---------------------------------------------------------------------------
+def _linspace(lo: float, hi: float, k: int) -> List[float]:
+    """K valori equispaziati (estremi inclusi) su [lo, hi]."""
+    lo_f, hi_f = float(lo), float(hi)
+    if k <= 1:
+        return [lo_f]
+    step = (hi_f - lo_f) / (k - 1)
+    return [lo_f + i * step for i in range(k)]
+
+
+def refine_search(
+    base_config: Dict[str, float],
+    activity_tracks: List[Tuple[str, Track]],
+    strava: Dict[str, List[Tuple[str, int, str]]],
+    segments: List[dict],
+    sweep_points: int = 5,
+    n_explore: int = 30,
+    max_rounds: int = 12,
+    batch_size: int = 14,
+    patience: int = 4,
+    min_mutate: int = 2,
+    max_mutate: int = 5,
+    single_frac: float = 0.35,
+    seed: int = 42,
+    quiet: bool = False,
+) -> Tuple[Metrics, Dict[str, object]]:
+    """Ricerca continua coarse-to-fine sui range continui di PARAM_BOUNDS.
+
+    Fasi:
+      A1 sweep 1-D      : `sweep_points` valori per parametro su TUTTO il range
+                          (nessun valore prestabilito); i parametri mai
+                          sensibili vengono esclusi dalle fasi successive;
+      A2 greedy continua: applica in sequenza il miglior punto di sweep di
+                          ogni parametro, conservandolo solo se migliora;
+      A3 esplorazione   : `n_explore` configurazioni Latin Hypercube che
+                          variano TUTTI i parametri attivi insieme;
+      B  affinamento    : intervalli centrati sul best corrente, ristretti ad
+                          ogni round con fattore adattivo; i candidati mutano
+                          UN parametro (~single_frac) o 2..max_mutate insieme,
+                          campionando UNIFORMEMENTE dentro l'intervallo →
+                          l'ottimo tra due valori qualsiasi è raggiungibile.
+                          Stop quando ogni intervallo ≤ risoluzione minima
+                          (interi: passo 1), oppure su pazienza/budget.
+
+    Returns:
+        (best, info): info contiene la diagnostica completa della ricerca.
+    """
+    rng = random.Random(seed)
+
+    bounds: Dict[str, Tuple[float, float]] = {n: PARAM_BOUNDS[n] for n in PARAM_NAMES}
+    frozen = {
+        name for name, (blo, bhi) in bounds.items()
+        if bhi - blo <= param_min_step(name)
+    }
+    excluded: set = set(frozen)
+    n_evals = 0
+
+    start = dict(base_config)
+    best = evaluate(start, activity_tracks, strava, segments)
+    n_evals += 1
+    q_ref = best.quality
+
+    if not quiet:
+        fuori = [
+            name for name in PARAM_NAMES
+            if not (bounds[name][0] - 1e-12 <= float(DEFAULTS[name]) <= bounds[name][1] + 1e-12)
+        ]
+        print(
+            f"    [refine] sweep={sweep_points}pt/param, explore={n_explore}, "
+            f"rounds<={max_rounds}, batch={batch_size}, pazienza={patience}, seed={seed}"
+        )
+        if fuori:
+            print(
+                f"    [refine] ⚠ default fuori dai range (non esplorati): "
+                f"{', '.join(sorted(fuori))}"
+            )
+        print(f"    [refine] baseline → {best.short()}")
+
+    # --- Fase A1: sweep 1-D su tutto il range ---
+    sweep_best: Dict[str, Tuple[float, float]] = {}
+    sweep_delta: Dict[str, float] = {}
+    if not quiet:
+        print("    [refine] fase A1: sweep 1-D...")
+    for name in sorted(set(bounds) - frozen):
+        blo, bhi = bounds[name]
+        step = param_min_step(name)
+        cur = float(start.get(name, DEFAULTS[name]))
+        v_best = cur
+        q_best = q_ref
+        delta_max = 0.0
+        for p in _linspace(blo, bhi, sweep_points):
+            pv = _clip_bound(name, p)
+            if abs(pv - cur) < max(step / 2.0, 1e-12):
+                continue
+            m = evaluate({name: pv}, activity_tracks, strava, segments)
+            n_evals += 1
+            if m.quality > q_best + 1e-9:
+                q_best = m.quality
+                v_best = pv
+            delta_max = max(delta_max, abs(m.quality - q_ref))
+        sweep_best[name] = (v_best, q_best)
+        sweep_delta[name] = delta_max
+        if delta_max < 1e-9:
+            excluded.add(name)
+    if not quiet:
+        sensibili = sorted(set(sweep_best) - excluded, key=lambda n: -sweep_delta[n])
+        top = ", ".join(f"{n} ({sweep_delta[n]:.2f})" for n in sensibili[:5])
+        print(
+            f"    [refine] fase A1: {len(excluded)} parametri non sensibili esclusi; "
+            f"top sensibilità: {top}"
+        )
+
+    # --- Fase A2: discesa greedy continua sui migliori punti dello sweep ---
+    if not quiet:
+        print("    [refine] fase A2: discesa greedy...")
+    for name in sorted(set(sweep_best) - excluded, key=lambda n: -sweep_delta[n]):
+        v = sweep_best[name][0]
+        if abs(v - float(start.get(name, DEFAULTS[name]))) < 1e-12:
+            continue
+        cand = dict(start)
+        cand[name] = v
+        _fix_density_constraint(cand)
+        m = evaluate(cand, activity_tracks, strava, segments)
+        n_evals += 1
+        if m.quality > best.quality + 1e-9:
+            best = m
+            start = cand
+
+    # --- Fase A3: esplorazione congiunta (Latin Hypercube) ---
+    lhs_names = sorted(set(bounds) - excluded)
+    if n_explore > 0 and lhs_names:
+        if not quiet:
+            print(f"    [refine] fase A3: esplorazione LHS ({n_explore} configurazioni)...")
+        perms = {name: rng.sample(range(n_explore), n_explore) for name in lhs_names}
+        for i in range(n_explore):
+            row: Dict[str, float] = {}
+            for name in lhs_names:
+                blo, bhi = bounds[name]
+                row[name] = _clip_bound(
+                    name, blo + (perms[name][i] + rng.random()) / n_explore * (bhi - blo)
+                )
+            cand = dict(start)
+            cand.update(row)
+            _fix_density_constraint(cand)
+            m = evaluate(cand, activity_tracks, strava, segments)
+            n_evals += 1
+            if m.quality > best.quality + 1e-9:
+                best = m
+                if not quiet:
+                    print(f"      [refine] LHS {i + 1}/{n_explore}: nuovo best → {best.short()}")
+
+    # --- Fase B: affinamento iterativo (zoom verso i miglioramenti) ---
+    centers: Dict[str, float] = {
+        name: float(best.config.get(name, DEFAULTS[name])) for name in lhs_names
+    }
+    widths = {name: bounds[name][1] - bounds[name][0] for name in centers}
+    span_tot = dict(widths)
+    min_w = {name: param_min_step(name) for name in centers}
+    rates_hist: Dict[str, List[float]] = {name: [] for name in centers}
+    mut_tot: Dict[str, int] = {name: 0 for name in centers}
+    hit_tot: Dict[str, int] = {name: 0 for name in centers}
+
+    stop_reason = "budget round raggiunto"
+    rounds_done = 0
+    improved_rounds = 0
+    consec_no = 0
+
+    if not quiet:
+        print(f"    [refine] fase B: affinamento iterativo su {len(centers)} parametri")
+
+    for rnd in range(1, max_rounds + 1):
+        rounds_done = rnd
+        q_before = best.quality
+        ref_cfg = dict(best.config)
+        batch_hits: Dict[str, int] = {}
+        batch_muts: Dict[str, int] = {}
+
+        for _ in range(batch_size):
+            pool = sorted(centers)
+            if not pool:
+                break
+            single = rng.random() < single_frac
+            k = 1 if single else min(len(pool), rng.randint(min_mutate, max_mutate))
+            chosen = rng.sample(pool, k)
+            cand = dict(ref_cfg)
+            for name in chosen:
+                c = centers[name]
+                half = widths[name] / 2.0
+                clo = max(bounds[name][0], c - half)
+                chi = min(bounds[name][1], c + half)
+                cand[name] = _clip_bound(name, rng.uniform(clo, chi))
+            _fix_density_constraint(cand)
+            mutated = [
+                name for name in PARAM_NAMES
+                if abs(float(cand.get(name, DEFAULTS[name]))
+                       - float(ref_cfg.get(name, DEFAULTS[name]))) > 1e-12
+            ]
+            if not mutated:
+                continue
+            m = evaluate(cand, activity_tracks, strava, segments)
+            n_evals += 1
+            for name in mutated:
+                batch_muts[name] = batch_muts.get(name, 0) + 1
+                mut_tot[name] = mut_tot.get(name, 0) + 1
+            if m.quality > best.quality + 1e-9:
+                best = m
+                for name in mutated:
+                    batch_hits[name] = batch_hits.get(name, 0) + 1
+                    hit_tot[name] = hit_tot.get(name, 0) + 1
+
+        # Restringimento adattivo degli intervalli + recentro sul best corrente
+        drops: List[str] = []
+        for name in list(centers):
+            muts = batch_muts.get(name, 0)
+            rate = batch_hits.get(name, 0) / muts if muts > 0 else 0.0
+            hist = rates_hist[name]
+            hist.append(rate)
+            rates_hist[name] = hist[-3:]
+            smooth = sum(rates_hist[name]) / len(rates_hist[name])
+            if smooth > 0.20:
+                factor = 0.85  # successo alto: restringe lentamente
+            elif smooth < 0.08:
+                factor = 0.35  # nessun successo: collassa rapidamente
+            else:
+                factor = 0.60
+            widths[name] = max(min_w[name], widths[name] * factor)
+            centers[name] = float(best.config.get(name, DEFAULTS[name]))
+            if rnd >= 3 and mut_tot[name] >= batch_size and hit_tot[name] == 0:
+                drops.append(name)
+        for name in drops:
+            if not quiet:
+                print(f"      [refine] escluso {name} (mai in un miglioramento)")
+            centers.pop(name, None)
+            widths.pop(name, None)
+            rates_hist.pop(name, None)
+
+        delta = best.quality - q_before
+        if delta > 1e-9:
+            improved_rounds += 1
+            consec_no = 0
+        else:
+            consec_no += 1
+
+        if not quiet:
+            avg_rel = (
+                sum(widths[n] / span_tot[n] for n in widths) / len(widths) if widths else 0.0
+            )
+            marker = "▲" if delta > 1e-9 else "·"
+            print(
+                f"      round {rnd:>2}/{max_rounds}  Q={best.quality:6.2f}  {marker}  "
+                f"Δ=+{delta:.3f}  larghezza_rel media={avg_rel:6.1%}  attivi={len(centers)}"
+            )
+
+        # Criteri di stop
+        if not centers:
+            stop_reason = "nessun parametro attivo residuo"
+            break
+        if all(widths[name] <= min_w[name] * 1.001 for name in widths):
+            stop_reason = "risoluzione minima raggiunta su tutti i parametri"
+            break
+        if consec_no >= patience:
+            stop_reason = f"pazienza: {patience} round consecutivi senza miglioramento"
+            break
+
+    return best, {
+        "method": "refine",
+        "stop_reason": stop_reason,
+        "batches": rounds_done,
+        "improved_batches": improved_rounds,
+        "batch_size": batch_size,
+        "n_evals": n_evals,
+        "sweep_points": sweep_points,
+        "larghezze_finali": {name: widths[name] / span_tot[name] for name in widths},
+        "attivi": sorted(centers),
+        "esclusi": sorted(excluded | (set(bounds) - set(centers))),
+    }
+
+# ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -886,8 +1269,8 @@ def main() -> None:
     parser.add_argument("--deep", action="store_true", help="Ottimizzazione approfondita")
     parser.add_argument("--baseline", action="store_true", help="Solo valutazione baseline + dead-param")
     parser.add_argument(
-        "--method", choices=["adaptive", "classic"], default="adaptive",
-        help="Motore di ricerca (default: adaptive multi-parametro)",
+        "--method", choices=["refine", "adaptive", "classic"], default="refine",
+        help="Motore di ricerca (default: refine, continua coarse-to-fine)",
     )
     parser.add_argument("--export", type=str, default=None, metavar="FILE",
                         help="Esporta i parametri ottimi in JSON (es. test/params_ottimi.json)")
@@ -898,22 +1281,29 @@ def main() -> None:
     quiet = args.quiet or args.baseline
 
     # Dimensioni della ricerca in base a --quick/--deep.
-    # Pre-inizializziamo entrambe le coppie di variabili per evitare
-    # "possibly unbound" dal punto di vista dell'analizzatore statico.
+    # Pre-inizializziamo tutte le variabili per evitare "possibly unbound"
+    # dal punto di vista dell'analizzatore statico.
     max_batches, batch_size, patience, restarts = 30, 16, 6, 2
     rounds = n_random = 2
+    sweep_points, n_explore, max_rounds = 5, 30, 12
     if args.quick:
-        if args.method == "adaptive":
+        if args.method == "refine":
+            sweep_points, n_explore, max_rounds, batch_size, patience = 3, 12, 8, 10, 3
+        elif args.method == "adaptive":
             max_batches, batch_size, patience, restarts = 15, 12, 4, 1
         else:
             rounds, n_random = 1, 15
     elif args.deep:
-        if args.method == "adaptive":
+        if args.method == "refine":
+            sweep_points, n_explore, max_rounds, batch_size, patience = 7, 60, 18, 20, 6
+        elif args.method == "adaptive":
             max_batches, batch_size, patience, restarts = 60, 24, 8, 4
         else:
             rounds, n_random = 4, 120
     else:
-        if args.method == "adaptive":
+        if args.method == "refine":
+            sweep_points, n_explore, max_rounds, batch_size, patience = 5, 30, 12, 14, 4
+        elif args.method == "adaptive":
             max_batches, batch_size, patience, restarts = 30, 16, 6, 2
         else:
             rounds, n_random = 2, 40
@@ -956,7 +1346,29 @@ def main() -> None:
     t_start = time.perf_counter()
     conv: Optional[Dict[str, object]] = None
 
-    if args.method == "adaptive":
+    if args.method == "refine":
+        # Ricerca continua coarse-to-fine: sweep 1-D → greedy → LHS → zoom.
+        print("\n--- Ricerca continua coarse-to-fine (sweep 1-D → greedy → LHS → affinamento) ---")
+        best, conv = refine_search(
+            DEFAULTS,
+            activity_tracks,
+            strava,
+            segments,
+            sweep_points=sweep_points,
+            n_explore=n_explore,
+            max_rounds=max_rounds,
+            batch_size=batch_size,
+            patience=patience,
+            seed=args.seed,
+            quiet=quiet,
+        )
+        n_evals += int(cast(int, conv["n_evals"]))
+
+        # Polish locale continuo (±passo di risoluzione)
+        print("\n--- Polish locale continuo (±passo di risoluzione) ---")
+        best, n_polish = polish_pass(best.config, activity_tracks, strava, segments, quiet)
+        n_evals += n_polish
+    elif args.method == "adaptive":
         # 3a. Dead-param PRELIMINARI: identifica i parametri non-sensibili da
         # escludere subito dalle mutazioni (evita di sprecare valutazioni).
         print("\nVerifica preliminare parametri non-sensibili...")
@@ -1053,6 +1465,8 @@ def main() -> None:
                 "batch_size": conv.get("batch_size") if conv else None,
                 "parametri_esclusi": conv.get("esclusi") if conv else [],
                 "parametri_attivi": conv.get("attivi") if conv else [],
+                "larghezze_intervalli_finali": conv.get("larghezze_finali") if conv else None,
+                "punti_sweep": conv.get("sweep_points") if conv else None,
             },
             "parametri_non_usati": dead[0],
             "parametri_non_sensibili": dead[1],

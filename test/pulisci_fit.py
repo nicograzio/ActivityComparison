@@ -17,10 +17,12 @@ FIT/GPX in ``Examples`` è emerso che l'elaborazione consiste di:
 4. RECORD VUOTI — i record privi di posizione ereditano le coordinate del
    punto precedente (verificato sull'ultimo record della Pedalata_serale);
 5. le coordinate/quota passano attraverso senza modifiche (delta mediano
-   ~4 cm, dovuto all'arrotondamento dei semicircoli FIT). Nei brevi tratti
-   subito dopo una ripartenza Strava ricostruisce invece posizioni proprie
-   (tratto quasi fermo, mai oltre qualche decina di metri): non è
-   riproducibile dai soli dati FIT ed è privo di impatto sui tempi segmento.
+   ~4 cm, dovuto all'arrotondamento dei semicircoli FIT). Quando il device
+   riacquisisce male dopo una pausa la traccia FIT riparte con un offset di
+   decine di metri che non decade; Strava lo respinge e fa "strisciare" la
+   traccia lungo la linea reale. Questo comportamento NON è riproducibile
+   dai soli dati del FIT (la stream offsettata è internamente coerente:
+   vedi ``reconstruct_positions``) ed è lasciato invariato.
 
 Lo script VALIDA la pulizia confrontando i timestamp/posizioni prodotti con
 quelli del GPX di riferimento della stessa attività.
@@ -273,8 +275,212 @@ def print_validation(stem: str, stats: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Export GPX della traccia pulita
+# Ricostruzione delle posizioni nei tratti "fuori traiettoria" (stile Strava)
 # ---------------------------------------------------------------------------
+# Fenomeno (verificato su Pedalata_serale_19082026 17:04-17:10): dopo una
+# pausa il ricevitore riacquisisce con soluzione OFFSETTATA di decine di
+# metri e vi resta incollato per minuti. L'export Strava respinge l'offset e
+# comprime la traccia (~28% della lunghezza FIT) lungo la linea reale.
+#
+# PERCHE' NON E' RIPRODUCIBILE DAI SOLI DATI FIT (esperimenti, vedi git):
+#   * la stream offsettata è INTERNAMENTE COERENTE: passo GPS ~ incremento
+#     del campo ``distance``, nessun salto punto-pointo, quindi nessuna firma
+#     locale la distingue da una pedalata lenta legittima;
+#   * i punti Strava corrono lungo la linea reale, decine di metri lontano
+#     da qualunque fix FIT: il miglior filtro locale provato (EMA/MA/shrink/
+#     chase) lascia RMS 20-26 m e max 30 m sulle due finestre peggiori;
+#   * servirebbe un riferimento esterno (map-matching o GPX noto), che qui
+#     non si vuole usare per costruire il "FIT equivalente".
+#
+# La macchina sotto (rilevatore + ponte strisciante) resta disponibile come
+# base per un futuro snap su geometria nota ma è DISATTIVATA di default
+# (parametro ``reconstruct`` / flag CLI ``--reconstruct``): attivarla senza
+# riferimento esterno altererebbe dati legittimi senza avvicinarsi a Strava.
+
+JUMP_THRESHOLD_M = 12.0      # passo oltre cui una fix è considerata fuori traiettoria
+STEP_DT_MAX_S = 3.0          # il salto anomalo avviene tra fix CONSECUTIVE (non tra pause)
+CUT_SPEED_MAX_MPS = 2.0      # attraversamento di pausa plausibile fino a questa velocita'
+PAUSE_DRIFT_M = 8.0          # deriva minima dello stream durante una pausa per aprire
+PAUSE_SPREAD_MAX_M = 30.0    # durante la deriva le fix restano ammassate (max raggio)
+HEAL_SPEED_MPS = 2.0         # velocita' oltre cui lo stream post-ripartenza e' fidato
+MIN_ANOMALY_S = 15.0         # durata minima dell'anomalia per attivare la ricostruzione
+CLOSE_THRESHOLD_M = 20.0     # gap sotto cui lo stream FIT e' di nuovo considerato fidato
+CHASE_SPEED_MPS = 0.6        # velocita' massima di "strisciamento" del ponte
+CHASE_DT_CAP_S = 5.0         # secondo massimo di avanzamento per fix (i buchi non contano)
+TAIL_BLEND_PTS = 6           # punti finali fusi con le fix reali al ricongiungimento
+
+
+
+def _detect_open_times(records: List[dict], events) -> set:
+    """Istanti (su record GREZZI) in cui aprire una ricostruzione di posizione.
+
+    Due firme di errore grossolano:
+
+    1. TELETRASPORTO: dopo una pausa la traccia salta oltre ``JUMP_THRESHOLD_M``
+       tra due fix, a velocita' implicita superiore a ``CUT_SPEED_MAX_MPS``;
+    2. DERIVA IN PAUSA: le fix registrate DURANTE una pausa restano ammassate
+       (raggio ``PAUSE_SPREAD_MAX_M``) ma traslate di oltre ``PAUSE_DRIFT_M``
+       rispetto alla posizione di stop, con velocita' irrisorie: il ricevitore
+       ha perso l'aggancio ed e' riacquisito su una soluzione offsettata
+       (Pedalata_serale_19082026 17:04-17:10). La traccia resta quindi
+       affidabile solo da qualche punto successivo: si apre una ricostruzione
+       dal secondo di stop e il ponte striscia finche' lo stream non guarisce.
+
+    Gli spostamenti plausibili compiuti durante la pausa (es. passeggiata:
+    ~100 m a passo umano, presenti anche nell'export Strava) NON aprono
+    ricostruzioni: la velocita' media durante la pausa li tradisce.
+    """
+    out: set = set()
+    pauses, _ = _pause_intervals(events)
+    if not pauses:
+        return out
+
+    # --- firma 1: teletrasporti attraverso le pause -------------------------
+    for i in range(1, len(records)):
+        a, b = records[i - 1], records[i]
+        if a["lat"] is None or b["lat"] is None:
+            continue
+        dt = (b["time"] - a["time"]).total_seconds()
+        if dt <= STEP_DT_MAX_S:
+            continue
+        if not any(pa < b["time"] and pb > a["time"] for pa, pb in pauses):
+            continue
+        d = _haversine_m(a["lat"], a["lon"], b["lat"], b["lon"])
+        if d / max(dt, 1.0) > CUT_SPEED_MAX_MPS and d >= JUMP_THRESHOLD_M:
+            out.add(b["time"])
+
+    # --- firma 2: deriva del GPS durante la pausa ---------------------------
+    for pa, pb in pauses:
+        during = [
+            r for r in records
+            if pa <= r["time"] <= pb and r["lat"] is not None
+        ]
+        if len(during) < 2:
+            continue
+        pre = next((r for r in reversed(records) if r["time"] <= pa and r["lat"] is not None), None)
+        if pre is None:
+            continue
+        center_lat = sum(r["lat"] for r in during) / len(during)
+        center_lon = sum(r["lon"] for r in during) / len(during)
+        spread = max(
+            _haversine_m(r["lat"], r["lon"], center_lat, center_lon) for r in during
+        )
+        drift = _haversine_m(pre["lat"], pre["lon"], center_lat, center_lon)
+        if drift >= PAUSE_DRIFT_M and spread <= PAUSE_SPREAD_MAX_M:
+            # il ricevitore ha riacquisito su una soluzione offsettata: la
+            # traccia non e' affidabile dalla RIPARTENZA (resume) finche' lo
+            # stream non torna a correre sano (v. HEAL_SPEED_MPS)
+            out.add(pb)
+    return out
+
+
+def reconstruct_positions(cleaned: List[dict], open_times: Optional[set] = None) -> List[dict]:
+    """Sostituisce le posizioni dei tratti derivati con un ponte "strisciante".
+
+    Opera sui record GIÀ puliti (pause tagliate, dedup applicata);
+    ``open_times`` contiene gli istanti di apertura rilevati sui record
+    grezzi (vedi ``_detect_open_times``). Dall'istante di apertura la
+    posizione ricostruita avanza verso lo stream FIT:
+
+    * del passo indicato dal campo ``distance`` del FIT (che riflette il
+      movimento reale anche quando il GPS è offsettato), limitato a
+      ``CHASE_SPEED_MPS`` al secondo;
+    * nella direzione del punto FIT corrente.
+
+    L'anomalia si chiude quando, dopo almeno ``MIN_ANOMALY_S``, lo stream
+    torna entro ``CLOSE_THRESHOLD_M`` dal ponte; gli ultimi punti prima della
+    chiusura vengono fusi linearmente col tornare ai dati reali (continuità).
+    Se lo stream non riconverge, i dati restano invariati.
+    """
+    out = [dict(r) for r in cleaned]
+    n = len(out)
+    if not open_times:
+        return out
+
+    def dist(a, b):
+        return _haversine_m(a["lat"], a["lon"], b["lat"], b["lon"])
+
+    def move_towards(src, dst, max_step):
+        d = dist(src, dst)
+        if d <= max_step:
+            return {"lat": dst["lat"], "lon": dst["lon"]}
+        f = max_step / d
+        return {"lat": src["lat"] + f * (dst["lat"] - src["lat"]),
+                "lon": src["lon"] + f * (dst["lon"] - src["lon"])}
+
+    def bridge_step(rec, dt, prev_dist):
+        """Passo del ponte: incremento `distance` FIT (movimento reale),
+        limitato a CHASE_SPEED_MPS al secondo."""
+        d = rec.get("distance")
+        inc = None
+        if d is not None and prev_dist is not None:
+            inc = max(0.0, d - prev_dist)
+        cap = CHASE_SPEED_MPS * min(dt, CHASE_DT_CAP_S)
+        return inc if inc is not None else cap, d
+
+    i = 1
+    while i < n:
+        prev, cur = out[i - 1], out[i]
+        if cur["lat"] is None or prev["lat"] is None or cur["time"] not in open_times:
+            i += 1
+            continue
+
+        # --- anomalia aperta su `cur`: insegui lo stream finché non riconverge ---
+        state = {"lat": prev["lat"], "lon": prev["lon"]}
+        prev_time = prev["time"]
+        prev_dist = prev.get("distance")
+        close_idx = None
+        j = i
+        while j < n:
+            rec = out[j]
+            if rec["lat"] is None:
+                j += 1
+                continue
+            gap = dist(state, rec)
+            elapsed = (rec["time"] - prev["time"]).total_seconds()
+            if j > i and gap <= CLOSE_THRESHOLD_M and elapsed >= MIN_ANOMALY_S:
+                close_idx = j
+                break
+            dt = min(max((rec["time"] - prev_time).total_seconds(), 1.0), CHASE_DT_CAP_S)
+            steplen, pd = bridge_step(rec, dt, prev_dist)
+            state = move_towards(state, rec, steplen)
+            prev_time = rec["time"]
+            prev_dist = pd if pd is not None else prev_dist
+            j += 1
+
+        if close_idx is None:
+            # nessuna riconvergenza: lascia i dati originali
+            i += 1
+            continue
+
+        # riscrive i punti interni con la traiettoria del ponte, fondendo gli
+        # ultimi TAIL_BLEND punti con le posizioni reali per evitare scarti
+        state = {"lat": prev["lat"], "lon": prev["lon"]}
+        prev_time = prev["time"]
+        prev_dist = prev.get("distance")
+        first_idx = i
+        while first_idx < close_idx and out[first_idx]["lat"] is None:
+            first_idx += 1
+        n_blend = min(TAIL_BLEND_PTS, max(0, close_idx - first_idx))
+        for k in range(first_idx, close_idx):
+            rec = out[k]
+            dt = min(max((rec["time"] - prev_time).total_seconds(), 1.0), CHASE_DT_CAP_S)
+            steplen, pd = bridge_step(rec, dt, prev_dist)
+            state = move_towards(state, rec, steplen)
+            prev_time = rec["time"]
+            prev_dist = pd if pd is not None else prev_dist
+            w = 1.0 if n_blend == 0 else min(1.0, (k - (close_idx - n_blend) + 1) / n_blend)
+            if w < 1.0 and rec["lat"] is not None:
+                rec["lat"] = state["lat"] + w * (rec["lat"] - state["lat"])
+                rec["lon"] = state["lon"] + w * (rec["lon"] - state["lon"])
+            else:
+                rec["lat"] = state["lat"]
+                rec["lon"] = state["lon"]
+            rec["reconstructed"] = True
+        i = close_idx + 1
+    return out
+
+
 def _fmt_num(value: float, decimals: int) -> str:
     """Formatta un numero con un numero fisso di decimali (senza -0)."""
     out = f"{value:.{decimals}f}"
@@ -336,17 +542,30 @@ def _xml_escape(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def validate_pair(fit_path: Path, gpx_path: Optional[Path]) -> None:
+def clean_fit(path: Path, reconstruct: bool = False) -> List[dict]:
+    """Pipeline completa: lettura FIT -> pulizia (-> ricostruzione, opt-in)."""
+    records, events = load_fit_data(path)
+    cleaned = clean_records(records, events)
+    if reconstruct:
+        cleaned = reconstruct_positions(cleaned, _detect_open_times(records, events))
+    return cleaned
+
+
+def validate_pair(fit_path: Path, gpx_path: Optional[Path], reconstruct: bool = False) -> None:
     """Pulisce un FIT e, se fornito, lo valida contro il GPX di riferimento."""
     records, events = load_fit_data(fit_path)
     cleaned = clean_records(records, events)
+    if reconstruct:
+        cleaned = reconstruct_positions(cleaned, _detect_open_times(records, events))
+    n_reco = sum(1 for r in cleaned if r.get("reconstructed"))
     print(
         f"\n{fit_path.name}: record FIT={len(records)}, eventi timer={len(events)}, "
-        f"dopo la pulizia={len(cleaned)}"
+        f"dopo la pulizia={len(cleaned)}, ricostruiti={n_reco}"
     )
     if gpx_path is not None:
         stats = compare_with_gpx(cleaned, load_gpx_points(gpx_path))
         print_validation(fit_path.stem, stats)
+
 
 
 def find_pairs() -> List[Tuple[Path, Path]]:
@@ -366,7 +585,13 @@ def main(argv=None) -> int:
     parser.add_argument("fit", nargs="?", help="Percorso del file FIT da pulire")
     parser.add_argument("gpx", nargs="?", help="GPX di riferimento (stessa attività)")
     parser.add_argument("-o", "--output", type=Path, help="Esporta la traccia pulita in GPX")
+    parser.add_argument(
+        "--reconstruct", action="store_true",
+        help="Sperimentale: attiva la ricostruzione delle posizioni post-pausa "
+             "(richiede un riferimento esterno per essere fedele a Strava)",
+    )
     args = parser.parse_args(argv)
+    reco = args.reconstruct
 
     if args.fit is None:
         # Modalità default: valida tutte le coppie disponibili in Examples/
@@ -376,7 +601,7 @@ def main(argv=None) -> int:
             return 1
         print(f"Coppie FIT/GPX trovate in Examples/: {len(pairs)}")
         for fit_path, gpx_path in pairs:
-            validate_pair(fit_path, gpx_path)
+            validate_pair(fit_path, gpx_path, reconstruct=reco)
         return 0
 
     fit_path = Path(args.fit)
@@ -385,11 +610,10 @@ def main(argv=None) -> int:
         return 1
 
     gpx_path = Path(args.gpx) if args.gpx else None
-    validate_pair(fit_path, gpx_path)
+    validate_pair(fit_path, gpx_path, reconstruct=reco)
 
     if args.output:
-        records, events = load_fit_data(fit_path)
-        cleaned = clean_records(records, events)
+        cleaned = clean_fit(fit_path, reconstruct=reco)
         export_gpx(cleaned, args.output, name=fit_path.stem)
         print(f"\nTraccia pulita esportata: {args.output.resolve()}")
 
