@@ -86,7 +86,7 @@ PARAM_NAMES: List[str] = [
     "START_PROJECTION_MIN_IMPROVE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", "MAX_TOTAL_PASSES",
-    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S",
+    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S", "GAP_REAL_MIN_GAP_S",
 ]
 
 DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
@@ -123,6 +123,7 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "TIE_EPS_M": [0.0, 0.3, 0.6, 0.9, 1.2, 1.8, 2.5, 4.0],
     "HARD_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 55.0, 70.0, 90.0],
     "MAX_INTERP_GAP_S": [0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0],
+    "GAP_REAL_MIN_GAP_S": [3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0],
 }
 
 # Range continui di ricerca (--method refine). A differenza delle griglie
@@ -172,6 +173,9 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "HARD_ACCEPT_M": (18.0, 99.0),
     # Soglia (s) oltre cui un buco di campionamento fa snap invece che interp.
     "MAX_INTERP_GAP_S": (0.0, 20.0),
+    # Soglia (s) di "buco vero" per lo snap al bordo piu' vicino del gate
+    # (sotto soglia: interpolazione lineare storica)
+    "GAP_REAL_MIN_GAP_S": (3.0, 20.0),
 }
 
 

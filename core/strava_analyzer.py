@@ -5,6 +5,7 @@ inversioni a U e passaggi multipli all'imbocco del segmento.
 """
 
 from bisect import bisect_left
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -82,6 +83,38 @@ HARD_ACCEPT_M = 45.0
 # interpolazione lineare del tempo sul gate e' disattivata (smart recording /
 # pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
 MAX_INTERP_GAP_S = 0.0
+# --- Attraversamento dei buchi di campionamento ---
+# Quando un gate cade su un chord con un buco di campionamento vero (dropout
+# GPS / pausa), interpolare il tempo attraverso il buco collocherebbe
+# l'attraversamento in un punto qualunque del vuoto. Validazione empirica su
+# 4 passaggi con buco sul gate (BePa UP TRAIL: gap 6/8/8/10s): Strava NON
+# interpola mai e assume l'attraversamento sul bordo del buco PIU' VICINO
+# alla proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb, per START ed END;
+# errore medio vs Strava ~0.1s). La vecchia regola (snap asimmetrico solo
+# per r > 0.5 su START e r < 0.5 su END, lineare altrove) matchava 3 casi
+# su 4; la stima cinematica Hermite (_kinematic_gap_time, disattivabile con
+# GAP_KIN_ENABLE) e' stata testata e RELEGATA a esperimento: errore medio
+# 12.2s vs 10.3s della regola asimmetrica sui medesimi 4 passaggi.
+# Riferimento: BePa UP TRAIL su Pedalata_pomeridiana_11072026.gpx
+# (dropout di 10s sul valle del gate START, r=0.49).
+GAP_KIN_ENABLE = False
+# Soglia (s) oltre cui un chord e' considerato un buco vero (dropout/pausa)
+# e si attiva lo snap al bordo piu' vicino; i chord normali dello smart
+# recording (1-3s) restano sull'interpolazione lineare, validata al
+# centesimo di secondo sull'intero dataset.
+GAP_REAL_MIN_GAP_S = 5.0
+# Intervalli consecutivi usati per stimare la velocita' ai bordi del buco.
+GAP_KIN_VELOCITY_N = 3
+# Granularita' della scansione tau per la ricerca dell'attraversamento
+# (raffinato poi per bisezione); fallback se il piano non viene attraversato.
+GAP_KIN_SCAN_STEPS = 48
+# Cap (s) dello scostamento ammesso della stima cinematica rispetto al
+# bordo del buco selezionato: limita il danno di un modello fuori dal vero.
+GAP_KIN_MAX_SHIFT_S = 6.0
+# Velocita' minima (m/s) media ai bordi del buco: sotto soglia il rider e'
+# fermo/in attesa (coda, traffico) e la cinematica non e' affidabile ->
+# si resta sul bordo del buco selezionato.
+GAP_KIN_MIN_SPEED_MS = 0.15
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -666,6 +699,188 @@ def _find_occurrences(
     return occurrences
 
 
+def _kinematic_gap_time(
+    track: Track,
+    k_val: int,
+    mode: str,
+    gate_lat: float,
+    gate_lon: float,
+    gap_s: float,
+) -> Optional[float]:
+    """Stima cinematica (Hermite cubico) del tempo di attraversamento del
+    gate attraverso un buco di campionamento.
+
+    Costruisce la traiettoria plausibile tra l'ultimo campione prima del
+    buco (A) e il primo dopo (B) usando posizioni e velocita' stimate ai
+    bordi (su GAP_KIN_VELOCITY_N intervalli ciascuna), in coordinate locali
+    ENU centrate sul gate. Il tempo di attraversamento e' la radice di
+    (P(tau)-G)·u = 0, dove u e' la direzione di marcia dedotta dalla
+    traccia (funziona anche per occorrenze in direzione reverse).
+    Restituisce None se la cinematica non e' affidabile (rider fermo ai
+    bordi, timestamp mancanti, piano non attraversato): in quel caso il
+    chiamante usa la regola legacy.
+    """
+    n = GAP_KIN_VELOCITY_N
+    i_a, i_b = k_val, k_val + 1
+    i_a0, i_b1 = k_val - n, k_val + 1 + n
+    if i_a0 < 0 or i_b1 >= len(track.points):
+        return None
+    p_a0, p_a = track.points[i_a0], track.points[i_a]
+    p_b, p_b1 = track.points[i_b], track.points[i_b1]
+    if not (p_a0.timestamp and p_b1.timestamp):
+        return None
+    dt_pre = (p_a.timestamp - p_a0.timestamp).total_seconds()
+    dt_post = (p_b1.timestamp - p_b.timestamp).total_seconds()
+    if dt_pre <= 0 or dt_post <= 0:
+        return None
+
+    # Coordinate locali ENU (equirettangolari) centrate sul gate: errore
+    # trascurabile sulle centinaia di metri rilevanti qui.
+    kx = math.cos(math.radians(gate_lat)) * math.pi / 180.0 * _EARTH_RADIUS_M
+    ky = math.pi / 180.0 * _EARTH_RADIUS_M
+
+    def ex(p) -> float:
+        return (p.longitude - gate_lon) * kx
+
+    def ey(p) -> float:
+        return (p.latitude - gate_lat) * ky
+
+    v_ax = (ex(p_a) - ex(p_a0)) / dt_pre
+    v_ay = (ey(p_a) - ey(p_a0)) / dt_pre
+    v_bx = (ex(p_b1) - ex(p_b)) / dt_post
+    v_by = (ey(p_b1) - ey(p_b)) / dt_post
+    # Guardia stagnazione: rider fermo ai bordi -> cinematica inaffidabile.
+    if (
+        math.hypot(v_ax, v_ay) < GAP_KIN_MIN_SPEED_MS
+        or math.hypot(v_bx, v_by) < GAP_KIN_MIN_SPEED_MS
+    ):
+        return None
+
+    a_x, a_y = ex(p_a), ey(p_a)
+    b_x, b_y = ex(p_b), ey(p_b)
+    big_l = gap_s
+
+    # Direzione di marcia media (mai dall'orientamento del GPX del segmento).
+    u_x, u_y = v_ax + v_bx, v_ay + v_by
+    norm_u = math.hypot(u_x, u_y)
+    if norm_u < 1e-9:
+        return None
+    u_x, u_y = u_x / norm_u, u_y / norm_u
+
+    def s_of(tau: float) -> float:
+        """Distanza firmata (m) della traiettoria Hermite dal gate lungo u."""
+        t2 = tau * tau
+        t3 = t2 * tau
+        h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+        h10 = t3 - 2.0 * t2 + tau
+        h01 = -2.0 * t3 + 3.0 * t2
+        h11 = t3 - t2
+        p_x = h00 * a_x + h10 * big_l * v_ax + h01 * b_x + h11 * big_l * v_bx
+        p_y = h00 * a_y + h10 * big_l * v_ay + h01 * b_y + h11 * big_l * v_by
+        return p_x * u_x + p_y * u_y  # gate nell'origine della ENU
+
+    # Scansione + bisezione sui cambi di segno di s(tau) in [0, 1].
+    steps = max(2, GAP_KIN_SCAN_STEPS)
+    roots = []
+    prev_tau = 0.0
+    prev_s = s_of(0.0)
+    for i in range(1, steps + 1):
+        tau = i / steps
+        cur_s = s_of(tau)
+        if prev_s == 0.0:
+            roots.append(prev_tau)
+        elif prev_s * cur_s < 0.0:
+            lo, hi, s_lo = prev_tau, tau, prev_s
+            for _ in range(24):
+                mid = 0.5 * (lo + hi)
+                s_mid = s_of(mid)
+                if s_lo * s_mid <= 0.0:
+                    hi = mid
+                else:
+                    lo, s_lo = mid, s_mid
+            roots.append(0.5 * (lo + hi))
+        prev_tau, prev_s = tau, cur_s
+    if prev_s == 0.0:
+        roots.append(1.0)
+    if not roots:
+        return None
+
+    t_a = track.points[k_val].timestamp.timestamp()
+    candidates = [t_a + tau * gap_s for tau in roots]
+    # Bias direzionale conforme alla semantica geofence: START -> ingresso
+    # piu' antico, END -> uscita piu' recente.
+    return min(candidates) if mode == "start" else max(candidates)
+
+
+def _legacy_gap_time(
+    track: Track, k_val: int, r_val: float, mode: str
+) -> Optional[float]:
+    """Regola legacy sul chord (k_val, r_val) per il tempo di attraversamento
+    del gate: snap al bordo del buco di campionamento (smart recording / pause
+    GPX) SOLO se la proiezione spaziale concorda (gate oltre meta' del chord
+    verso quel bordo), altrimenti interpolazione lineare costante del tempo
+    lungo il chord.
+
+    mode: "start" (gate di ingresso) oppure "end" (gate di uscita).
+    Restituisce un timestamp epoch in secondi, o None se i timestamp
+    del chord non sono disponibili.
+    """
+    ta = track.points[k_val].timestamp
+    tb = track.points[k_val + 1].timestamp
+    if not ta or not tb:
+        return None
+    gap_s = (tb - ta).total_seconds()
+    if gap_s > MAX_INTERP_GAP_S:
+        if mode == "start":
+            if r_val > 0.5:
+                return tb.timestamp()
+        elif r_val < 0.5:
+            return ta.timestamp()
+    return ta.timestamp() + r_val * gap_s
+
+
+def _gap_crossing_time(
+    track: Track,
+    k_val: int,
+    r_val: float,
+    mode: str,
+    gate_lat: Optional[float] = None,
+    gate_lon: Optional[float] = None,
+) -> Optional[float]:
+    """Tempo di attraversamento del gate sul chord (k_val, r_val).
+
+    Dispatcher: sui chord normali (gap < GAP_REAL_MIN_GAP_S) vale la regola
+    storica (_legacy_gap_time: snap condizionato o interpolazione lineare,
+    validata al centesimo sull'intero dataset). Sui buchi veri di
+    campionamento l'attraversamento NON viene interpolato nel vuoto: si
+    assume il bordo del buco piu' vicino alla proiezione del gate
+    (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il comportamento
+    osservato di Strava su 4 passaggi con buco (errore medio ~0.1s).
+    Se GAP_KIN_ENABLE e' attivo, sui buchi veri si prova prima la stima
+    cinematica Hermite (esperimento), con cap GAP_KIN_MAX_SHIFT_S rispetto
+    al bordo selezionato; in caso di stima inaffidabile si resta sul bordo.
+    """
+    ta = track.points[k_val].timestamp
+    tb = track.points[k_val + 1].timestamp
+    if not ta or not tb:
+        return None
+    gap_s = (tb - ta).total_seconds()
+    if gap_s < GAP_REAL_MIN_GAP_S:
+        return _legacy_gap_time(track, k_val, r_val, mode)
+    # Buco vero: bordo del buco piu' vicino alla proiezione del gate.
+    t_edge = (ta if r_val < 0.5 else tb).timestamp()
+    if not GAP_KIN_ENABLE or gate_lat is None or gate_lon is None:
+        return t_edge
+    t_kin = _kinematic_gap_time(track, k_val, mode, gate_lat, gate_lon, gap_s)
+    if t_kin is None:
+        return t_edge
+    if abs(t_kin - t_edge) > GAP_KIN_MAX_SHIFT_S:
+        t_kin = t_edge + (
+            GAP_KIN_MAX_SHIFT_S if t_kin > t_edge else -GAP_KIN_MAX_SHIFT_S
+        )
+    return t_kin
+
+
 def find_strava_segments_in_track(
     strava_segments: List[dict],
     track: Track,
@@ -761,26 +976,21 @@ def find_strava_segments_in_track(
             if k_last_valley is not None:
                 k_start, r_start, d_start = k_last_valley, r_last_valley, d_last_valley
 
-            def _get_interp_time(k_val: int, r_val: float, mode: str) -> Optional[float]:
-                ta = track.points[k_val].timestamp
-                tb = track.points[k_val + 1].timestamp
-                if not ta or not tb:
-                    return None
-                gap_s = (tb - ta).total_seconds()
-                if gap_s > MAX_INTERP_GAP_S:
-                    # Buco di campionamento (smart recording/pausa). Snap al
-                    # bordo del buco SOLO se la proiezione spaziale concorda
-                    # (gate oltre meta' del segmento verso quel bordo);
-                    # altrimenti interpolazione lineare costante.
-                    if mode == "start":
-                        if r_val > 0.5:
-                            return tb.timestamp()
-                    elif r_val < 0.5:
-                        return ta.timestamp()
-                return ta.timestamp() + r_val * gap_s
+            def _get_interp_time(
+                k_val: int, r_val: float, mode: str, gate_lat: float, gate_lon: float
+            ) -> Optional[float]:
+                # Dispatcher sottile verso la funzione a livello modulo
+                # (permette monkeypatch nei test e riuso dell'estimatore).
+                return _gap_crossing_time(
+                    track, k_val, r_val, mode, gate_lat, gate_lon
+                )
 
-            ts_start = _get_interp_time(k_start, r_start, "start")
-            ts_end = _get_interp_time(k_end, r_end, "end")
+            ts_start = _get_interp_time(
+                k_start, r_start, "start", seg_start_lat, seg_start_lon
+            )
+            ts_end = _get_interp_time(
+                k_end, r_end, "end", seg_end_lat, seg_end_lon
+            )
 
             time_sec = None
             if ts_start is not None and ts_end is not None:
