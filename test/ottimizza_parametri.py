@@ -36,19 +36,22 @@ Usage (dalla root):
     python test/ottimizza_parametri.py --method adaptive   # vecchio motore
     python test/ottimizza_parametri.py --method classic
     python test/ottimizza_parametri.py -q           # output compatto
+    python test/ottimizza_parametri.py -d           # log dettagliato di ogni operazione
 """
 
 import argparse
 import json
+import os
 import math
 import random
 import re
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Sequence, Tuple, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -70,6 +73,7 @@ SCORE_W_RECALL = 0.35
 SCORE_W_PRECISION = 0.35
 SCORE_W_TIME = 0.30
 TIME_TOLERANCE_S = 15.0
+_DETAILED: bool = False
 
 # ---------------------------------------------------------------------------
 # PARAMETRI OGGETTO DELL'OTTIMIZZAZIONE
@@ -335,6 +339,198 @@ def _restore(saved: Dict[str, float]) -> None:
         setattr(sa, name, value)
 
 
+# ---------------------------------------------------------------------------
+# VALUTAZIONE PARALLELA (riuso dei worker tra una valutazione e l'altra)
+# ---------------------------------------------------------------------------
+# Ogni evaluate() valuta 15 tracce indipendenti: il costo va quasi tutto in
+# find_strava_segments_in_track. Le tracce, i segmenti e la ground-truth non
+# cambiano mai tra una valutazione e l'altra: i worker li caricano UNA volta
+# nel loro processo (initializer) e ogni evaluate vi spedisce solo la config
+# (piccola) + l'indice della traccia. I worker restituiscono i contatori
+# leggeri per traccia, che il main aggrega. È in fallback sequenziale quello
+# originale se il process pool non è disponibile.
+_W_ACTIVITY: Optional[List[Tuple[str, Track]]] = None
+_W_SEGMENTS: Optional[List[dict]] = None
+_W_STRAVA: Optional[Dict[str, List[Tuple[str, int, str]]]] = None
+_pool: Optional[ProcessPoolExecutor] = None
+
+
+def _init_optim_worker() -> None:
+    """Carica i dati nel processo worker (eseguito una volta per processo)."""
+    global _W_ACTIVITY, _W_SEGMENTS, _W_STRAVA
+    _W_ACTIVITY = load_activity_tracks()
+    _W_SEGMENTS = load_strava_segments(str(SEGMENTS_DIR))
+    _W_STRAVA = parse_strava_txt(STRAVA_TXT)
+
+
+def _score_track(
+    track: Track,
+    strava_list: Sequence[Tuple[str, Optional[float], str]],
+    distance: float,
+    min_points: int,
+    segments: List[dict],
+) -> Dict[str, float]:
+    """Calcola i contatori di qualità per UNA traccia (aggregati dal main).
+
+    Applica find_strava_segments_in_track e il confronto greedy per ogni
+    segmento, restituendo solo i contatori (niente oggetti, è serializzabile).
+    """
+    found = find_strava_segments_in_track(
+        segments, track,
+        distance_threshold_m=distance,
+        min_match_points=min_points,
+    )
+    found_norm = [
+        (normalize(o["segment_name"]), o["time_sec"], o["segment_name"], o["direction"])
+        for o in found
+    ]
+    n_algo = len(found_norm)
+    n_strava = len(strava_list)
+
+    found_by_name: Dict[str, list] = {}
+    for f in found_norm:
+        found_by_name.setdefault(f[0], []).append(f)
+    strava_by_name: Dict[str, list] = {}
+    for s in strava_list:
+        strava_by_name.setdefault(s[0], []).append(s)
+
+    missing = extra = paired = 0
+    matched_ok = matched_small = matched_off = 0
+    sum_abs = 0.0
+    sum_sq = 0.0
+
+    # Ordine di prima comparsa: deterministico (niente iterazione di un set)
+    names = list(dict.fromkeys(
+        [f[0] for f in found_norm] + [s[0] for s in strava_by_name]
+    ))
+    for name in names:
+        algo_occ = found_by_name.get(name, ())
+        strava_occ = strava_by_name.get(name, ())
+        a_free = list(range(len(algo_occ)))
+        s_free = list(range(len(strava_occ)))
+        while a_free and s_free:
+            best = None
+            for i in a_free:
+                t_algo = algo_occ[i][1]
+                if t_algo is None:
+                    continue
+                for j in s_free:
+                    t_str = strava_occ[j][1]
+                    if t_str is None:
+                        continue
+                    d = abs(t_algo - t_str)
+                    if best is None or d < best[0]:
+                        best = (d, i, j)
+            if best is None:
+                break
+            _, i, j = best
+            diff = algo_occ[i][1] - strava_occ[j][1]
+            abs_diff = abs(float(diff))
+            paired += 1
+            sum_abs += abs_diff
+            sum_sq += abs_diff * abs_diff
+            if abs(diff) <= 3:
+                matched_ok += 1
+            elif abs(diff) <= 15:
+                matched_small += 1
+            else:
+                matched_off += 1
+            a_free.remove(i)
+            s_free.remove(j)
+        missing += len(s_free)
+        extra += len(a_free)
+
+    return {
+        "n_algo": n_algo,
+        "n_strava": n_strava,
+        "missing": missing,
+        "extra": extra,
+        "paired": paired,
+        "matched_ok": matched_ok,
+        "matched_small": matched_small,
+        "matched_off": matched_off,
+        "sum_abs": sum_abs,
+        "sum_sq": sum_sq,
+    }
+
+
+def _eval_task(payload) -> Dict[str, float]:
+    """Entry point del worker: (overrides, indice traccia) → contatori della traccia.
+
+    Applica la config al proprio modulo core.strava_analyzer prima di calcolare,
+    così il risultato non dipende dall'ordine dei task nel pool.
+    """
+    overrides, index = payload
+    _apply_overrides(overrides)
+
+    # I dati del worker vengono caricati UNA volta nel processo dall'initializer
+    # (_init_optim_worker), quindi in condizioni normali non sono mai None. Ci
+    # protegge comunque (e fa capire a Pylance che non serve pedice su None)
+    # una verifica difensiva: se mancano, li carichiamo al volo.
+    activity = _W_ACTIVITY
+    segments = _W_SEGMENTS
+    strava = _W_STRAVA
+    if activity is None or segments is None or strava is None:
+        _init_optim_worker()
+        activity = _W_ACTIVITY
+        segments = _W_SEGMENTS
+        strava = _W_STRAVA
+    assert activity is not None and segments is not None and strava is not None
+
+    name, track = activity[index]
+    distance = overrides.get("DISTANCE_THRESHOLD_M", DEFAULTS["DISTANCE_THRESHOLD_M"])
+    min_points = int(overrides.get("MIN_MATCH_POINTS", DEFAULTS["MIN_MATCH_POINTS"]))
+    strava_list = strava.get(name, [])
+    return _score_track(track, strava_list, distance, min_points, segments)
+
+
+def _evaluate_counters(
+    overrides: Dict[str, float],
+    activity_tracks: List[Tuple[str, Track]],
+    strava: Dict[str, List[Tuple[str, int, str]]],
+    segments: List[dict],
+    distance_threshold: float,
+    min_match_points: int,
+) -> List[dict]:
+    """Contatori di qualità per ogni traccia: in parallelo sul pool persistente,
+    o in fallback sequenziale (stesso codice, nel processo principale)."""
+    n = len(activity_tracks)
+    if n == 0:
+        return []
+    pool = _get_pool()
+    if pool is not None:
+        try:
+            payloads = [(overrides, i) for i in range(n)]
+            return list(pool.map(_eval_task, payloads))
+        except Exception:
+            pass  # il pool può fallire al primo uso → ripiega sul sequenziale
+    # Fallback sequenziale.in-process, con overrides applicati/ripristinati
+    saved = _apply_overrides(overrides)
+    counters = []
+    try:
+        for name, track in activity_tracks:
+            strava_list = strava.get(name, [])
+            counters.append(
+                _score_track(track, strava_list, distance_threshold, min_match_points, segments)
+            )
+    finally:
+        _restore(saved)
+    return counters
+
+
+def _get_pool() -> Optional[ProcessPoolExecutor]:
+    """Crea (su richiesta) il pool persistente di worker; None se non possibile."""
+    global _pool
+    if _pool is None:
+        # Un worker per CPU disponibile; le tracce indipendenti si dividono tra loro.
+        workers = os.cpu_count() or 1
+        try:
+            _pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_optim_worker)
+        except (OSError, PermissionError, ImportError):
+            _pool = None
+    return _pool
+
+
 def evaluate(
     overrides: Dict[str, float],
     activity_tracks: List[Tuple[str, Track]],
@@ -351,99 +547,59 @@ def evaluate(
 
     distance_threshold = overrides.get("DISTANCE_THRESHOLD_M", DEFAULTS["DISTANCE_THRESHOLD_M"])
     min_match_points = int(overrides.get("MIN_MATCH_POINTS", DEFAULTS["MIN_MATCH_POINTS"]))
-
-    saved = _apply_overrides(overrides)
-    try:
-        total_seg_strava = 0
-        total_seg_algo = 0
-        total_missing = 0
-        total_extra = 0
-        matched_ok = 0
-        matched_small = 0
-        matched_off = 0
-        total_paired = 0
-        sum_abs_delta_s = 0.0
-        sum_sq_delta_s = 0.0  # somma delta^2 (per il delta RMS, come confronto_segmenti.py)
-
-        for activity_name, track in activity_tracks:
-            found = find_strava_segments_in_track(
-                segments, track,
-                distance_threshold_m=distance_threshold,
-                min_match_points=min_match_points,
-            )
-            found_norm = [
-                (normalize(o["segment_name"]), o["time_sec"], o["segment_name"], o["direction"])
-                for o in found
-            ]
-            strava_list = strava.get(activity_name, [])
-
-            total_seg_strava += len(strava_list)
-            total_seg_algo += len(found_norm)
-
-            def min_delta_pairs(name):
-                algo_occ = [f for f in found_norm if f[0] == name]
-                strava_occ = [(s, t, n) for s, t, n in strava_list if s == name]
-                pairs = []
-                a_free = list(range(len(algo_occ)))
-                s_free = list(range(len(strava_occ)))
-                while a_free and s_free:
-                    best = None
-                    for i in a_free:
-                        for j in s_free:
-                            if algo_occ[i][1] is None or strava_occ[j][1] is None:
-                                continue
-                            d = abs(algo_occ[i][1] - strava_occ[j][1])
-                            if best is None or d < best[0]:
-                                best = (d, i, j)
-                    if best is None:
-                        break
-                    _, i, j = best
-                    pairs.append((algo_occ[i], strava_occ[j]))
-                    a_free.remove(i)
-                    s_free.remove(j)
-                return pairs, [algo_occ[i] for i in a_free], [strava_occ[j] for j in s_free]
-
-            for name in {f[0] for f in found_norm} | {s[0] for s in strava_list}:
-                pairs, a_left, s_left = min_delta_pairs(name)
-                for a, s in pairs:
-                    diff = a[1] - s[1]
-                    total_paired += 1
-                    abs_diff = abs(float(diff))
-                    sum_abs_delta_s += abs_diff
-                    sum_sq_delta_s += abs_diff * abs_diff
-                    if abs(diff) <= 3:
-                        matched_ok += 1
-                    elif abs(diff) <= 15:
-                        matched_small += 1
-                    else:
-                        matched_off += 1
-                total_missing += len(s_left)
-                total_extra += len(a_left)
-
-        recall_pct = (
-            100.0 * (total_seg_strava - total_missing) / total_seg_strava
-            if total_seg_strava > 0 else 0.0
+    if _DETAILED:
+        cfg_str = dict(overrides) if overrides else "baseline"
+        print(
+            f"    [evaluate] valutazione config={cfg_str} "
+            f"(dist={distance_threshold}, min_pts={min_match_points})"
         )
-        precision_pct = (
-            100.0 * (total_seg_algo - total_extra) / total_seg_algo
-            if total_seg_algo > 0 else 0.0
+
+    # Aggregazione dei contatori per traccia (in parallelo o in fallback sequenziale)
+    counters = _evaluate_counters(
+        overrides, activity_tracks, strava, segments,
+        distance_threshold, min_match_points,
+    )
+
+    total_seg_strava = sum(c["n_strava"] for c in counters)
+    total_seg_algo = sum(c["n_algo"] for c in counters)
+    total_missing = sum(c["missing"] for c in counters)
+    total_extra = sum(c["extra"] for c in counters)
+    matched_ok = sum(c["matched_ok"] for c in counters)
+    matched_small = sum(c["matched_small"] for c in counters)
+    matched_off = sum(c["matched_off"] for c in counters)
+    total_paired = sum(c["paired"] for c in counters)
+    sum_abs_delta_s = sum(c["sum_abs"] for c in counters)
+    sum_sq_delta_s = sum(c["sum_sq"] for c in counters)
+
+    recall_pct = (
+        100.0 * (total_seg_strava - total_missing) / total_seg_strava
+        if total_seg_strava > 0 else 0.0
+    )
+    precision_pct = (
+        100.0 * (total_seg_algo - total_extra) / total_seg_algo
+        if total_seg_algo > 0 else 0.0
+    )
+    mean_abs_delta = sum_abs_delta_s / total_paired if total_paired > 0 else 0.0
+    # Accuratezza temporale sul delta RMS: formula identica a quella di
+    # test/confronto_segmenti.py (penalizza quadraticamente gli scostamenti
+    # grandi; scosti opposti non si compensano).
+    rms_delta = math.sqrt(sum_sq_delta_s / total_paired) if total_paired > 0 else 0.0
+    time_acc_pct = (
+        max(0.0, 100.0 * (1.0 - rms_delta / TIME_TOLERANCE_S))
+        if total_paired > 0 else 0.0
+    )
+    quality = (
+        SCORE_W_RECALL * recall_pct
+        + SCORE_W_PRECISION * precision_pct
+        + SCORE_W_TIME * time_acc_pct
+    )
+    if _DETAILED:
+        print(
+            f"    [evaluate] risultato: Q={quality:6.2f} rec={recall_pct:5.1f}% "
+            f"prec={precision_pct:5.1f}% time={time_acc_pct:5.1f}% "
+            f"paired={total_paired} missing={total_missing} extra={total_extra} "
+            f"delta_rms={rms_delta:.2f}s"
         )
-        mean_abs_delta = sum_abs_delta_s / total_paired if total_paired > 0 else 0.0
-        # Accuratezza temporale sul delta RMS: formula identica a quella di
-        # test/confronto_segmenti.py (penalizza quadraticamente gli scostamenti
-        # grandi; scosti opposti non si compensano).
-        rms_delta = math.sqrt(sum_sq_delta_s / total_paired) if total_paired > 0 else 0.0
-        time_acc_pct = (
-            max(0.0, 100.0 * (1.0 - rms_delta / TIME_TOLERANCE_S))
-            if total_paired > 0 else 0.0
-        )
-        quality = (
-            SCORE_W_RECALL * recall_pct
-            + SCORE_W_PRECISION * precision_pct
-            + SCORE_W_TIME * time_acc_pct
-        )
-    finally:
-        _restore(saved)
 
     return Metrics(
         quality=quality, recall_pct=recall_pct, precision_pct=precision_pct,
@@ -481,6 +637,8 @@ def coordinate_descent(
     best = evaluate(base_config, activity_tracks, strava, segments)
     if not quiet:
         print(f"    [coord. descent] baseline → {best.short()}")
+    if _DETAILED:
+        print("    [coord. descent] inizio discesa greedy")
 
     current = dict(base_config)
     for rnd in range(1, rounds + 1):
@@ -504,6 +662,8 @@ def coordinate_descent(
                     best = m
                     current = candidate
                     improved_once = True
+                    if _DETAILED:
+                        print(f"      [coord. descent] >>> nuovo best Q={m.quality:6.1f} per {name}={value!s}")
             if not quiet and rnd == 1:
                 print()
         if not improved_once:
@@ -527,6 +687,8 @@ def random_search(
     """Esplorazione stocastica riproducibile su tutte le griglie."""
     rng = random.Random(seed)
     best = evaluate(base_config, activity_tracks, strava, segments)
+    if _DETAILED:
+        print(f"    [random search] inizio ({n_iter} iterazioni, seed={seed})")
 
     searchable = [n for n, g in SEARCH_SPACE.items() if len(g) > 1]
     for it in range(1, n_iter + 1):
@@ -539,6 +701,8 @@ def random_search(
             print(f"      random {it:>3}/{n_iter} → Q={m.quality:6.1f}{marker}")
         if m.quality > best.quality + 1e-9:
             best = m
+            if _DETAILED:
+                print(f"      [random search] >>> nuovo best Q={m.quality:6.1f}")
     return best
 
 
@@ -622,6 +786,8 @@ def adaptive_multiparam_search(
             f"window_eps={window_eps}, seed={seed}"
         )
         print(f"    [adaptive] baseline → {best.short()}")
+    if _DETAILED:
+        print("    [adaptive] inizio ricerca adattiva")
 
     def _idx_to_config(cand_idx: Dict[str, int], base: Dict[str, float]) -> Dict[str, float]:
         cfg = dict(base)
@@ -705,6 +871,8 @@ def adaptive_multiparam_search(
                 if m.quality > restart_best.quality + 1e-9:
                     restart_best = m
                     restart_best_idx = cand_idx
+                    if _DETAILED:
+                        print(f"      [adaptive] batch {b} it {it+1}: nuovo best Q={m.quality:6.1f}")
                     for name in chosen:
                         batch_hits[name] = batch_hits.get(name, 0) + 1
                         param_hits[name] = param_hits.get(name, 0) + 1
@@ -781,6 +949,8 @@ def adaptive_multiparam_search(
             best_config = _idx_to_config(restart_best_idx, start_config)
             if not quiet:
                 print(f"    [adaptive] restart {restart}: nuovo miglioramento → {best.short()}")
+            if _DETAILED and restart_best.quality > best.quality + 1e-9:
+                print(f"    [adaptive] restart {restart}: nuovo best globale Q={best.quality:6.1f}")
 
     return best, {
         "method": "adaptive",
@@ -835,8 +1005,12 @@ def polish_pass(
                     best = m
                     current = dict(m.config)
                     improved = True
+                    if _DETAILED:
+                        print(f"      [polish] >>> nuovo best Q={m.quality:6.1f} (round {rnd})")
         if not quiet:
             print(f"      [polish] round {rnd} → {best.short()}")
+        elif _DETAILED:
+            print(f"      [polish] round {rnd}: nessun miglioramento")
         if not improved:
             break
     return best, n_evals
@@ -886,6 +1060,9 @@ def detect_dead_params(
         insensibile = True
         for sample in samples:
             m = evaluate({name: sample}, activity_tracks, strava, segments)
+            if _DETAILED:
+                tag = "SENSIBILE" if abs(m.quality - baseline.quality) >= 1e-9 else "insensibile"
+                print(f"      [dead-params] {name} prova {sample} → Q={m.quality:6.2f} ({tag})")
             if abs(m.quality - baseline.quality) >= 1e-9:
                 insensibile = False
                 break
@@ -1106,6 +1283,8 @@ def refine_search(
         if m.quality > best.quality + 1e-9:
             best = m
             start = cand
+            if _DETAILED:
+                print(f"      [refine] >>> nuovo best Q={m.quality:6.1f} (greedy fase A2)")
 
     # --- Fase A3: esplorazione congiunta (Latin Hypercube) ---
     lhs_names = sorted(set(bounds) - excluded)
@@ -1129,6 +1308,8 @@ def refine_search(
                 best = m
                 if not quiet:
                     print(f"      [refine] LHS {i + 1}/{n_explore}: nuovo best → {best.short()}")
+                elif _DETAILED:
+                    print(f"      [refine] >>> LHS {i + 1}/{n_explore}: nuovo best Q={m.quality:6.1f}")
 
     # --- Fase B: affinamento iterativo (zoom verso i miglioramenti) ---
     centers: Dict[str, float] = {
@@ -1188,6 +1369,8 @@ def refine_search(
                 for name in mutated:
                     batch_hits[name] = batch_hits.get(name, 0) + 1
                     hit_tot[name] = hit_tot.get(name, 0) + 1
+                if _DETAILED:
+                    print(f"      [refine] >>> nuovo best Q={m.quality:6.1f} (fase B)")
 
         # Restringimento adattivo degli intervalli + recentro sul best corrente
         drops: List[str] = []
@@ -1274,9 +1457,12 @@ def main() -> None:
                         help="Esporta i parametri ottimi in JSON (es. test/params_ottimi.json)")
     parser.add_argument("--seed", type=int, default=42, help="Seed per la random search")
     parser.add_argument("-q", "--quiet", action="store_true", help="Output compatto")
+    parser.add_argument("-d", "--detailed", action="store_true", help="Log dettagliato su ogni operazione")
     args = parser.parse_args()
 
     quiet = args.quiet or args.baseline
+    global _DETAILED
+    _DETAILED = args.detailed
 
     # Dimensioni della ricerca in base a --quick/--deep.
     # Pre-inizializziamo tutte le variabili per evitare "possibly unbound"
@@ -1375,6 +1561,8 @@ def main() -> None:
         n_evals += 3 * len(PARAM_NAMES)
         if not quiet and pre_excluded:
             print(f"  {len(pre_excluded)} parametri non-sensibili identificati")
+        if _DETAILED and pre_excluded:
+            print(f"    [main] parametri non-sensibili (prerequisito): {sorted(pre_excluded)}")
 
         # 3b. Adaptive multi-parameter batch search (con range dinamico e stop)
         print("\n--- Ricerca adattiva multi-parametro (AMBS) ---")
