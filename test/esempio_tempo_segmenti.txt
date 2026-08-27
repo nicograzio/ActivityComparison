@@ -59,7 +59,7 @@ Pedalata_pomeridiana_11072026.fit:
 Pedalata_pomeridiana_16082026.gpx:
 - Monelline 2:06
 - BePa UP TRAIL 15:18
-- Pistino Etilico 2:35
+- Pistino Etilico 2:32
 
 Pedalata_pomeridiana_17082026.gpx:
 - Pistino Etilico 2:28

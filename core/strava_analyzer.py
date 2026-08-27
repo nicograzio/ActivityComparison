@@ -60,7 +60,7 @@ START_PROJECTION_MIN_IMPROVE_M = 0.3
 # Parametri per la gestione degli ingressi e passaggi spuri
 TRIM_REF_POINTS = 6
 TRIM_CHECK_LIMIT = 1800
-TRIM_INDEX_GAP = 13
+TRIM_INDEX_GAP = 19
 
 # Parametri per il raggruppamento degli anchor point iniziali
 ANCHOR_SCAN_RANGE = 20
@@ -81,7 +81,7 @@ HARD_ACCEPT_M = 45.0
 # Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
 # interpolazione lineare del tempo sul gate e' disattivata (smart recording /
 # pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
-MAX_INTERP_GAP_S = 3.3333333333333335
+MAX_INTERP_GAP_S = 0.0
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0

@@ -76,15 +76,16 @@ def parse_strava_txt(path: Path) -> dict:
 
 
 def fmt_time(sec):
-    """Formatta secondi nel formato M:SS (o H:MM:SS)."""
+    """Formatta i secondi nel formato M:SS.mmm (o H:MM:SS.mmm) con 3 decimali."""
     if sec is None:
         return "n/d"
-    sec = int(round(sec))
-    h, rem = divmod(sec, 3600)
-    m, s = divmod(rem, 60)
+    tot_ms = int(round(float(sec) * 1000))
+    h, rem_ms = divmod(tot_ms, 3600_000)
+    m, rem_s = divmod(rem_ms, 60_000)
+    s, ms = divmod(rem_s, 1000)
     if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
+        return f"{h}:{m:02d}:{s:02d}.{ms:03d}"
+    return f"{m}:{s:02d}.{ms:03d}"
 
 
 def main() -> None:
@@ -111,6 +112,7 @@ def main() -> None:
     sum_abs_delta_s = 0.0   # somma |delta| (per il delta medio, solo informativo)
     sum_sq_delta_s = 0.0    # somma delta^2 (per il delta RMS usato nell'accuratezza)
     max_abs_delta_s = 0.0   # peggior scostamento assoluto osservato
+    worst_rows = []  # (|delta|, attività, segmento, delta, t_algo, t_strava) per la classifica
     fmt_times = {}  # (stem, estensione) -> [(nome_norm, time_sec), ...] per invarianza formato
 
     print("=" * 78)
@@ -176,6 +178,7 @@ def main() -> None:
                     sum_abs_delta_s += abs_diff
                     sum_sq_delta_s += abs_diff * abs_diff
                     max_abs_delta_s = max(max_abs_delta_s, abs_diff)
+                    worst_rows.append((abs_diff, activity_file.name, a[2], float(diff), float(a[1]), float(ssec)))
                 if abs(diff) <= 3:
                     marker = "OK"
                     if is_gpx:
@@ -215,8 +218,8 @@ def main() -> None:
         if diff_line:
             print("    Tempi (algo vs Strava):")
             for name, diff, talgo, tstrava, _dname, marker, len_m, start_km in diff_line:
-                print(f"      - {name:<24} algo={fmt_time(talgo):>8}  Strava={fmt_time(tstrava):>8}  "
-                      f"Δ={diff:+.0f}s {marker}  [{len_m/1000:.2f} km alla distanza {start_km:.1f} km]")
+                print(f"      - {name:<24} algo={fmt_time(talgo):>12}  Strava={fmt_time(tstrava):>12}  "
+                      f"Δ={diff:+9.3f}s {marker}  [{len_m/1000:.2f} km alla distanza {start_km:.1f} km]")
         if missing:
             print(f"    MANCANTI per l'algoritmo: {[f'{n} {fmt_time(t)}' for n, t in missing]}")
         if extra:
@@ -280,13 +283,27 @@ def main() -> None:
     print(f"  Tempi entro +/-3s:  {matched_ok}")
     print(f"  Tempi entro +/-15s: {matched_small}")
     print(f"  Tempi oltre +/-15s: {matched_off}")
-    print(f"\n  Punteggio qualità algoritmo (calcolato sui soli GPX): {quality_score:.1f}/100")
-    print(f"    Recall passaggi Strava:    {recall_pct:5.1f}%  ({total_seg_strava - total_missing}/{total_seg_strava})")
-    print(f"    Precisione (no extra):     {precision_pct:5.1f}%")
+    print(f"\n  Punteggio qualità algoritmo (calcolato sui soli GPX): {quality_score:.3f}/100")
+    print(f"    Recall passaggi Strava:    {recall_pct:7.3f}%  ({total_seg_strava - total_missing}/{total_seg_strava})")
+    print(f"    Precisione (no extra):     {precision_pct:7.3f}%")
     print(
-        f"    Accuratezza tempo:         {time_acc_pct:5.1f}%  "
-        f"(delta RMS {rms_delta:.2f}s, medio {mean_abs_delta:.2f}s, max {max_abs_delta_s:.2f}s)"
+        f"    Accuratezza tempo:         {time_acc_pct:7.3f}%  "
+        f"(delta RMS {rms_delta:.3f}s, medio {mean_abs_delta:.3f}s, max {max_abs_delta_s:.3f}s)"
     )
+
+    # --- Classifica degli scostamenti piu' alti (solo GPX) ---
+    # Utile per concentrare il miglioramento dell'algoritmo sugli outlier:
+    # il delta RMS e' dominato dai casi piu' lontani da Strava.
+    if total_paired > 0:
+        n_over_1 = sum(1 for r in worst_rows if r[0] > 1)
+        n_over_3 = matched_small + matched_off
+        print(
+            f"\n  SCOSTAMENTI ALTI: {n_over_1}/{len(worst_rows)} oltre 1s "
+            f"| {n_over_3} oltre 3s — top 10 per |delta|:"
+        )
+        for ad, act, sname, dff, talgo_v, tstr_v in sorted(worst_rows, key=lambda r: -r[0])[:10]:
+            print(f"    - {sname:<24} {act:<38} Δ={dff:+9.3f}s  "
+                  f"algo={fmt_time(talgo_v):>12}  Strava={fmt_time(tstr_v):>12}")
 
     # --- Discrepanze di formato: stessa pedalata registrata in FIT e GPX ---
     # Solo indice informativo: NON entra nel punteggio qualità.
@@ -301,8 +318,8 @@ def main() -> None:
                 continue
             deltas = [abs(x[1] - y[1]) for x, y in zip(la, lb)] or [0.0]
             worst = max(worst, max(deltas))
-            print(f"  {stem}: delta medio {sum(deltas)/len(deltas):5.2f}s  max {max(deltas):5.2f}s")
-        print(f"  Peggior delta formato: {worst:.2f}s")
+            print(f"  {stem}: delta medio {sum(deltas)/len(deltas):9.3f}s  max {max(deltas):9.3f}s")
+        print(f"  Peggior delta formato: {worst:.3f}s")
 
     # --- Attività FIT senza coppia GPX: solo elenco dei passaggi trovati ---
     if fit_only_stems:
