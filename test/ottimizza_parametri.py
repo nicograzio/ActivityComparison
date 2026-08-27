@@ -79,11 +79,9 @@ PARAM_NAMES: List[str] = [
     "CLUSTER_GAP_IDX", "PROGRESS_RATIO", "PROGRESS_SLACK_M", "MIN_DENSITY",
     "MAX_DENSITY", "MIN_LENGTH_M", "PROJECTION_WINDOW", "END_PROJECTION_EXTRA_IDX",
     "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
-    "END_PROJECTION_MIN_IMPROVE_M",
     "START_PROJECTION_EXTRA_IDX",
     "START_PROJECTION_ACCEPT_M",
     "START_PROJECTION_EXIT_RISE_M",
-    "START_PROJECTION_MIN_IMPROVE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", "MAX_TOTAL_PASSES",
     "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S", "GAP_REAL_MIN_GAP_S",
@@ -108,11 +106,9 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "END_PROJECTION_EXTRA_IDX": [30, 40, 50, 60, 70, 80, 100, 120],
     "END_PROJECTION_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 65.0],
     "END_PROJECTION_EXIT_RISE_M": [3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0],
-    "END_PROJECTION_MIN_IMPROVE_M": [0.0, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
     "START_PROJECTION_EXTRA_IDX": [30, 40, 50, 60, 80, 100, 120],
     "START_PROJECTION_ACCEPT_M": [20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0],
     "START_PROJECTION_EXIT_RISE_M": [1.0, 2.0, 3.0, 4.0, 5.0, 8.0, 10.0],
-    "START_PROJECTION_MIN_IMPROVE_M": [0.0, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
     "TRIM_REF_POINTS": [2, 3, 4, 5, 6],
     "TRIM_CHECK_LIMIT": [10, 15, 20, 25, 30, 40, 50],
     "TRIM_INDEX_GAP": [5, 8, 10, 12, 15, 20, 25],
@@ -153,11 +149,9 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "END_PROJECTION_EXTRA_IDX": (20.0, 150.0),
     "END_PROJECTION_ACCEPT_M": (0.0, 90.0),
     "END_PROJECTION_EXIT_RISE_M": (0.0, 30.0),
-    "END_PROJECTION_MIN_IMPROVE_M": (0.0, 5.5),
     "START_PROJECTION_EXTRA_IDX": (20.0, 150.0),
     "START_PROJECTION_ACCEPT_M": (0.0, 90.0),
     "START_PROJECTION_EXIT_RISE_M": (0.0, 30.0),
-    "START_PROJECTION_MIN_IMPROVE_M": (0.0, 5.5),
     # NB: lower bound 1 (e non 0): con 0 punti di riferimento il trim perde di
     # significato e la ricerca continuativa genererebbe configurazioni degeneri.
     "TRIM_REF_POINTS": (1.0, 25.0),
@@ -175,7 +169,7 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "MAX_INTERP_GAP_S": (0.0, 20.0),
     # Soglia (s) di "buco vero" per lo snap al bordo piu' vicino del gate
     # (sotto soglia: interpolazione lineare storica)
-    "GAP_REAL_MIN_GAP_S": (3.0, 20.0),
+    "GAP_REAL_MIN_GAP_S": (0.0, 20.0),
 }
 
 

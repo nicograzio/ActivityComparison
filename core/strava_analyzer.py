@@ -19,7 +19,7 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
 # Soglia di vicinanza GPS per considerare un punto di traccia come candidato
-DISTANCE_THRESHOLD_M = 30.0
+DISTANCE_THRESHOLD_M = 42.5
 # Numero minimo di punti di traccia che devono coincidere con il segmento
 MIN_MATCH_POINTS = 5
 # Rapporto per definire la tolleranza di inizio (in base ai punti totali)
@@ -46,7 +46,6 @@ PROJECTION_WINDOW = 0
 END_PROJECTION_EXTRA_IDX = 20
 END_PROJECTION_ACCEPT_M = 25.0
 END_PROJECTION_EXIT_RISE_M = 7.682230450012804
-END_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la proiezione dello START (simmetrici a quelli della fine).
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
@@ -54,14 +53,11 @@ END_PROJECTION_MIN_IMPROVE_M = 0.3
 START_PROJECTION_EXTRA_IDX = 150
 START_PROJECTION_ACCEPT_M = 25.0
 START_PROJECTION_EXIT_RISE_M = 3.0
-# Miglioramento minimo (metri) che il valle deve garantire rispetto al punto
-# proiettato localmente prima di essere preferito (anti-rumore GPS).
-START_PROJECTION_MIN_IMPROVE_M = 0.3
 
 # Parametri per la gestione degli ingressi e passaggi spuri
-TRIM_REF_POINTS = 6
-TRIM_CHECK_LIMIT = 1800
-TRIM_INDEX_GAP = 19
+TRIM_REF_POINTS = 13
+TRIM_CHECK_LIMIT = 60
+TRIM_INDEX_GAP = 21
 
 # Parametri per il raggruppamento degli anchor point iniziali
 ANCHOR_SCAN_RANGE = 20
@@ -82,7 +78,7 @@ HARD_ACCEPT_M = 45.0
 # Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
 # interpolazione lineare del tempo sul gate e' disattivata (smart recording /
 # pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
-MAX_INTERP_GAP_S = 0.0
+MAX_INTERP_GAP_S = 0.9647740472829456
 # --- Attraversamento dei buchi di campionamento ---
 # Quando un gate cade su un chord con un buco di campionamento vero (dropout
 # GPS / pausa), interpolare il tempo attraverso il buco collocherebbe
@@ -90,47 +86,28 @@ MAX_INTERP_GAP_S = 0.0
 # 4 passaggi con buco sul gate (BePa UP TRAIL: gap 6/8/8/10s): Strava NON
 # interpola mai e assume l'attraversamento sul bordo del buco PIU' VICINO
 # alla proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb, per START ed END;
-# errore medio vs Strava ~0.1s). La vecchia regola (snap asimmetrico solo
-# per r > 0.5 su START e r < 0.5 su END, lineare altrove) matchava 3 casi
-# su 4; la stima cinematica Hermite (_kinematic_gap_time, disattivabile con
-# GAP_KIN_ENABLE) e' stata testata e RELEGATA a esperimento: errore medio
-# 12.2s vs 10.3s della regola asimmetrica sui medesimi 4 passaggi.
-# Riferimento: BePa UP TRAIL su Pedalata_pomeridiana_11072026.gpx
-# (dropout di 10s sul valle del gate START, r=0.49).
-GAP_KIN_ENABLE = False
+# errore medio vs Strava ~0.1s).
 # Soglia (s) oltre cui un chord e' considerato un buco vero (dropout/pausa)
 # e si attiva lo snap al bordo piu' vicino; i chord normali dello smart
 # recording (1-3s) restano sull'interpolazione lineare, validata al
 # centesimo di secondo sull'intero dataset.
-GAP_REAL_MIN_GAP_S = 5.0
-# Intervalli consecutivi usati per stimare la velocita' ai bordi del buco.
-GAP_KIN_VELOCITY_N = 3
-# Granularita' della scansione tau per la ricerca dell'attraversamento
-# (raffinato poi per bisezione); fallback se il piano non viene attraversato.
-GAP_KIN_SCAN_STEPS = 48
-# Cap (s) dello scostamento ammesso della stima cinematica rispetto al
-# bordo del buco selezionato: limita il danno di un modello fuori dal vero.
-GAP_KIN_MAX_SHIFT_S = 6.0
-# Velocita' minima (m/s) media ai bordi del buco: sotto soglia il rider e'
-# fermo/in attesa (coda, traffico) e la cinematica non e' affidabile ->
-# si resta sul bordo del buco selezionato.
-GAP_KIN_MIN_SPEED_MS = 0.15
+GAP_REAL_MIN_GAP_S = 3.5614020778632245
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
+_DEG2RAD = math.pi / 180.0
 
 
 def _haversine_to_points(
     lat: float, lon: float, lats: np.ndarray, lons: np.ndarray
 ) -> np.ndarray:
     """Distanza geodesica in metri tra un punto e un array di punti."""
-    deg2rad = np.pi / 180.0
-    dlat = (lats - lat) * deg2rad
-    dlon = (lons - lon) * deg2rad
+    dlat = (lats - lat) * _DEG2RAD
+    dlon = (lons - lon) * _DEG2RAD
     a = (
         np.sin(dlat / 2.0) ** 2
-        + np.cos(lat * deg2rad)
-        * np.cos(lats * deg2rad)
+        + np.cos(lat * _DEG2RAD)
+        * np.cos(lats * _DEG2RAD)
         * np.sin(dlon / 2.0) ** 2
     )
     np.clip(a, 0.0, 1.0, out=a)
@@ -141,8 +118,7 @@ def _project_point_on_segment(
     lat_p: float, lon_p: float, lat_a: float, lon_a: float, lat_b: float, lon_b: float
 ) -> float:
     """Proietta il punto P sul segmento AB e restituisce la frazione r [0, 1]."""
-    lat_avg = np.radians(lat_a)
-    cos_lat = np.cos(lat_avg)
+    cos_lat = math.cos(math.radians(lat_a))
 
     dlat_ab = lat_b - lat_a
     dlon_ab = (lon_b - lon_a) * cos_lat
@@ -155,7 +131,7 @@ def _project_point_on_segment(
         return 0.0
 
     r = (dlat_ap * dlat_ab + dlon_ap * dlon_ab) / denom
-    return float(np.clip(r, 0.0, 1.0))
+    return max(0.0, min(1.0, r))
 
 
 def _track_segment_kmh(track: Track, k: int) -> Optional[float]:
@@ -167,9 +143,40 @@ def _track_segment_kmh(track: Track, k: int) -> Optional[float]:
     dt = (b.timestamp - a.timestamp).total_seconds()
     if dt <= 0:
         return None
-    dist = haversine_distance(a, b)
-    return float((dist / dt) * 3.6)
+    return (haversine_distance(a, b) / dt) * 3.6
 
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distanza geodesica scalare (m): stessa formula di _haversine_to_points."""
+    dlat = (lat2 - lat1) * _DEG2RAD
+    dlon = (lon2 - lon1) * _DEG2RAD
+    a = (
+        math.sin(dlat / 2.0) ** 2
+        + math.cos(lat1 * _DEG2RAD) * math.cos(lat2 * _DEG2RAD) * math.sin(dlon / 2.0) ** 2
+    )
+    if a > 1.0:
+        a = 1.0
+    return _EARTH_RADIUS_M * 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
+def _chord_moving(track: Track, k: int) -> bool:
+    """True se il chord (k, k+1) non indica stazionarieta del rider."""
+    speed = _track_segment_kmh(track, k)
+    return speed is None or speed >= STATIONARY_SPEED_KMH
+
+
+def _chord_projection(
+    track: Track, k: int, target_lat: float, target_lon: float
+) -> Tuple[float, float]:
+    """Proiezione del gate sul chord (k, k+1): restituisce (r, distanza_m)."""
+    pa = track.points[k]
+    pb = track.points[k + 1]
+    r = _project_point_on_segment(
+        target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
+    )
+    p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
+    p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
+    return r, _haversine_m(target_lat, target_lon, p_lat, p_lon)
 
 def _find_best_track_projection(
     track: Track,
@@ -187,22 +194,9 @@ def _find_best_track_projection(
     end_k = min(len(track.points) - 2, center_idx + window)
 
     for k in range(start_k, end_k + 1):
-        speed = _track_segment_kmh(track, k)
-        if speed is not None and speed < STATIONARY_SPEED_KMH:
+        if not _chord_moving(track, k):
             continue
-
-        pa = track.points[k]
-        pb = track.points[k + 1]
-
-        r = _project_point_on_segment(
-            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
-        )
-
-        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
-        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
-
-        d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
-
+        r, d = _chord_projection(track, k, target_lat, target_lon)
         if d < best_dist:
             best_dist = d
             best_k = k
@@ -211,7 +205,7 @@ def _find_best_track_projection(
     return best_k, best_r, best_dist
 
 
-def _find_first_gate_valley(
+def _find_gate_valley(
     track: Track,
     target_lat: float,
     target_lon: float,
@@ -219,95 +213,34 @@ def _find_first_gate_valley(
     max_extra_idx: int,
     accept_m: float,
     exit_rise_m: float,
+    backward: bool,
 ) -> Tuple[Optional[int], float, float]:
-    """Trova il valle della distanza gate-traccia andando AVANTI dal centro.
+    """Trova il valle della distanza gate-traccia partendo dal centro.
 
-    Usato per il FINE del segmento. Su un "altipiano" di distanze quasi
-    uguali (jitter GPS attorno al gate) sceglie il candidato PIU' RECENTE
-    (ultima uscita dall'area del gate), emulando il geofence-exit di Strava
-    e rendendo il risultato indipendente dal punto in cui parte la scansione
-    e dal campionamento (FIT vs GPX).
+    backward=False (gate END): scansione in avanti dal centro e, sul
+    plateau di jitter GPS, tie-break sul candidato piu' recente (ultima
+    uscita dall'area del gate, geofence-exit). backward=True (gate START):
+    scansione all'indietro e tie-break sul piu' antico (primo ingresso).
+    La selezione a mediana rende il risultato indipendente dal punto in
+    cui parte la scansione e dal campionamento (FIT vs GPX).
     """
-    start_k = max(0, center_idx)
-    end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
+    if backward:
+        start_k = max(0, center_idx - max_extra_idx)
+        end_k = min(len(track.points) - 2, center_idx)
+        scan = range(end_k, start_k - 1, -1)
+    else:
+        start_k = max(0, center_idx)
+        end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
+        scan = range(start_k, end_k + 1)
 
     accept_limit = max(accept_m, HARD_ACCEPT_M)
     seen: List[Tuple[int, float, float]] = []  # (k, r, d)
     run_min = float("inf")
 
-    for k in range(start_k, end_k + 1):
-        speed = _track_segment_kmh(track, k)
-        if speed is not None and speed < STATIONARY_SPEED_KMH:
+    for k in scan:
+        if not _chord_moving(track, k):
             continue
-
-        pa = track.points[k]
-        pb = track.points[k + 1]
-
-        r = _project_point_on_segment(
-            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
-        )
-        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
-        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
-        d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
-
-        seen.append((k, r, d))
-        if d < run_min:
-            run_min = d
-        elif d - run_min > exit_rise_m and run_min <= accept_limit:
-            break
-
-    if not seen:
-        return None, 0.0, float("inf")
-
-    best_d = min(s[2] for s in seen)
-    if not (best_d <= accept_m or best_d <= HARD_ACCEPT_M):
-        return None, 0.0, float("inf")
-
-    # Tie-break: mediana del run contiguo contenente il minimo (stabile tra
-    # formati ed estremi evitati: ne primo ingresso ne ultima uscita netta)
-    k_sel, r_sel, d_sel = _median_tie_selection(seen, best_d)
-    return k_sel, r_sel, d_sel
-
-
-def _find_last_gate_valley(
-    track: Track,
-    target_lat: float,
-    target_lon: float,
-    center_idx: int,
-    max_extra_idx: int,
-    accept_m: float,
-    exit_rise_m: float,
-) -> Tuple[Optional[int], float, float]:
-    """Trova il valle della distanza gate-traccia andando INDIETRO dal centro.
-
-    Usato per l'INIZIO del segmento (mirror di `_find_first_gate_valley`).
-    Su un "altipiano" di distanze quasi uguali (jitter GPS) sceglie il
-    candidato PIU' ANTICO (primo ingresso nell'area del gate), emulando il
-    geofence-enter di Strava e rendendo il risultato indipendente dal punto
-    in cui parte la scansione e dal campionamento (FIT vs GPX).
-    """
-    start_k = max(0, center_idx - max_extra_idx)
-    end_k = min(len(track.points) - 2, center_idx)
-
-    accept_limit = max(accept_m, HARD_ACCEPT_M)
-    seen: List[Tuple[int, float, float]] = []  # (k, r, d)
-    run_min = float("inf")
-
-    for k in range(end_k, start_k - 1, -1):
-        speed = _track_segment_kmh(track, k)
-        if speed is not None and speed < STATIONARY_SPEED_KMH:
-            continue
-
-        pa = track.points[k]
-        pb = track.points[k + 1]
-
-        r = _project_point_on_segment(
-            target_lat, target_lon, pa.latitude, pa.longitude, pb.latitude, pb.longitude
-        )
-        p_lat = pa.latitude + r * (pb.latitude - pa.latitude)
-        p_lon = pa.longitude + r * (pb.longitude - pa.longitude)
-        d = float(_haversine_to_points(target_lat, target_lon, np.array([p_lat]), np.array([p_lon]))[0])
-
+        r, d = _chord_projection(track, k, target_lat, target_lon)
         seen.append((k, r, d))
         if d < run_min:
             run_min = d
@@ -344,6 +277,34 @@ def _median_tie_selection(
     return chosen[len(chosen) // 2]
 
 
+def _extract_gpx_points(gpx) -> List[TrackPoint]:
+    """Estrae i punti dal GPX: tracks se presenti, altrimenti routes."""
+    points: List[TrackPoint] = []
+    for gpx_track in gpx.tracks:
+        for segment in gpx_track.segments:
+            for point in segment.points:
+                points.append(
+                    TrackPoint(
+                        latitude=point.latitude,
+                        longitude=point.longitude,
+                        altitude=point.elevation,
+                        timestamp=point.time,
+                    )
+                )
+    if not points:
+        for route in gpx.routes:
+            points.extend(
+                TrackPoint(
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    altitude=point.elevation,
+                    timestamp=point.time,
+                )
+                for point in route.points
+            )
+    return points
+
+
 def load_strava_segments(folder_path: str) -> List[dict]:
     """Carica tutti i segmenti GPX dalla cartella Strava_Segments."""
     segments: List[dict] = []
@@ -356,30 +317,7 @@ def load_strava_segments(folder_path: str) -> List[dict]:
             with open(gpx_file, "r", encoding="utf-8") as f:
                 gpx = gpxpy.parse(f)
 
-            points: List[TrackPoint] = []
-            for gpx_track in gpx.tracks:
-                for segment in gpx_track.segments:
-                    for point in segment.points:
-                        points.append(
-                            TrackPoint(
-                                latitude=point.latitude,
-                                longitude=point.longitude,
-                                altitude=point.elevation,
-                                timestamp=point.time,
-                            )
-                        )
-
-            if not points:
-                for route in gpx.routes:
-                    points.extend(
-                        TrackPoint(
-                            latitude=point.latitude,
-                            longitude=point.longitude,
-                            altitude=point.elevation,
-                            timestamp=point.time,
-                        )
-                        for point in route.points
-                    )
+            points = _extract_gpx_points(gpx)
 
             if len(points) < 2:
                 continue
@@ -615,19 +553,20 @@ def _find_occurrences(
     min_density: float = MIN_DENSITY,
     max_density: float = MAX_DENSITY,
     max_total_passes: int = MAX_TOTAL_PASSES,
-) -> List[Tuple[bool, int, int, float, float, List[Tuple[int, int]]]]:
+) -> List[Tuple[bool, float, List[Tuple[int, int]]]]:
     """Trova tutte le occorrenze del segmento nella traccia.
 
     Returns:
-        List di (reverse, t0, t1, length_m, avg_dist_m, chain)
+        List di (reverse, avg_dist_m, chain)
     """
     n_seg = len(candidates)
     n_track = len(track_profile)
     seg_length = segment_profile[-1]
     used = np.zeros(n_track, dtype=bool)
-    occurrences: List[Tuple[bool, int, int, float, float, List[Tuple[int, int]]]] = []
+    occurrences: List[Tuple[bool, float, List[Tuple[int, int]]]] = []
 
     for reverse in (False, True):
+        seg_pts_order = segment_track.points[::-1] if reverse else segment_track.points
         for _ in range(max_total_passes):
             masked = _masked_candidates(candidates, used, reverse)
             profile = _reversed_profile(segment_profile) if reverse else segment_profile
@@ -650,7 +589,6 @@ def _find_occurrences(
 
             found = False
             for s0 in anchors:
-                seg_pts_order = segment_track.points[::-1] if reverse else segment_track.points
                 chain = _walk_forward(
                     masked,
                     track_profile,
@@ -683,13 +621,12 @@ def _find_occurrences(
 
                 # Calcolo della distanza media geografica della catena per lo scoring
                 chain_dists = []
-                seg_pts = segment_track.points[::-1] if reverse else segment_track.points
                 for s_i, t_i in chain:
-                    d = haversine_distance(seg_pts[s_i], track.points[t_i])
+                    d = haversine_distance(seg_pts_order[s_i], track.points[t_i])
                     chain_dists.append(d)
                 avg_dist_m = float(np.mean(chain_dists)) if chain_dists else float("inf")
 
-                occurrences.append((reverse, t0, t1, length_m, avg_dist_m, chain))
+                occurrences.append((reverse, avg_dist_m, chain))
                 used[t0 : t1 + 1] = True
                 found = True
                 break
@@ -699,137 +636,33 @@ def _find_occurrences(
     return occurrences
 
 
-def _kinematic_gap_time(
-    track: Track,
-    k_val: int,
-    mode: str,
-    gate_lat: float,
-    gate_lon: float,
-    gap_s: float,
-) -> Optional[float]:
-    """Stima cinematica (Hermite cubico) del tempo di attraversamento del
-    gate attraverso un buco di campionamento.
-
-    Costruisce la traiettoria plausibile tra l'ultimo campione prima del
-    buco (A) e il primo dopo (B) usando posizioni e velocita' stimate ai
-    bordi (su GAP_KIN_VELOCITY_N intervalli ciascuna), in coordinate locali
-    ENU centrate sul gate. Il tempo di attraversamento e' la radice di
-    (P(tau)-G)·u = 0, dove u e' la direzione di marcia dedotta dalla
-    traccia (funziona anche per occorrenze in direzione reverse).
-    Restituisce None se la cinematica non e' affidabile (rider fermo ai
-    bordi, timestamp mancanti, piano non attraversato): in quel caso il
-    chiamante usa la regola legacy.
-    """
-    n = GAP_KIN_VELOCITY_N
-    i_a, i_b = k_val, k_val + 1
-    i_a0, i_b1 = k_val - n, k_val + 1 + n
-    if i_a0 < 0 or i_b1 >= len(track.points):
-        return None
-    p_a0, p_a = track.points[i_a0], track.points[i_a]
-    p_b, p_b1 = track.points[i_b], track.points[i_b1]
-    if not (p_a0.timestamp and p_b1.timestamp):
-        return None
-    dt_pre = (p_a.timestamp - p_a0.timestamp).total_seconds()
-    dt_post = (p_b1.timestamp - p_b.timestamp).total_seconds()
-    if dt_pre <= 0 or dt_post <= 0:
-        return None
-
-    # Coordinate locali ENU (equirettangolari) centrate sul gate: errore
-    # trascurabile sulle centinaia di metri rilevanti qui.
-    kx = math.cos(math.radians(gate_lat)) * math.pi / 180.0 * _EARTH_RADIUS_M
-    ky = math.pi / 180.0 * _EARTH_RADIUS_M
-
-    def ex(p) -> float:
-        return (p.longitude - gate_lon) * kx
-
-    def ey(p) -> float:
-        return (p.latitude - gate_lat) * ky
-
-    v_ax = (ex(p_a) - ex(p_a0)) / dt_pre
-    v_ay = (ey(p_a) - ey(p_a0)) / dt_pre
-    v_bx = (ex(p_b1) - ex(p_b)) / dt_post
-    v_by = (ey(p_b1) - ey(p_b)) / dt_post
-    # Guardia stagnazione: rider fermo ai bordi -> cinematica inaffidabile.
-    if (
-        math.hypot(v_ax, v_ay) < GAP_KIN_MIN_SPEED_MS
-        or math.hypot(v_bx, v_by) < GAP_KIN_MIN_SPEED_MS
-    ):
-        return None
-
-    a_x, a_y = ex(p_a), ey(p_a)
-    b_x, b_y = ex(p_b), ey(p_b)
-    big_l = gap_s
-
-    # Direzione di marcia media (mai dall'orientamento del GPX del segmento).
-    u_x, u_y = v_ax + v_bx, v_ay + v_by
-    norm_u = math.hypot(u_x, u_y)
-    if norm_u < 1e-9:
-        return None
-    u_x, u_y = u_x / norm_u, u_y / norm_u
-
-    def s_of(tau: float) -> float:
-        """Distanza firmata (m) della traiettoria Hermite dal gate lungo u."""
-        t2 = tau * tau
-        t3 = t2 * tau
-        h00 = 2.0 * t3 - 3.0 * t2 + 1.0
-        h10 = t3 - 2.0 * t2 + tau
-        h01 = -2.0 * t3 + 3.0 * t2
-        h11 = t3 - t2
-        p_x = h00 * a_x + h10 * big_l * v_ax + h01 * b_x + h11 * big_l * v_bx
-        p_y = h00 * a_y + h10 * big_l * v_ay + h01 * b_y + h11 * big_l * v_by
-        return p_x * u_x + p_y * u_y  # gate nell'origine della ENU
-
-    # Scansione + bisezione sui cambi di segno di s(tau) in [0, 1].
-    steps = max(2, GAP_KIN_SCAN_STEPS)
-    roots = []
-    prev_tau = 0.0
-    prev_s = s_of(0.0)
-    for i in range(1, steps + 1):
-        tau = i / steps
-        cur_s = s_of(tau)
-        if prev_s == 0.0:
-            roots.append(prev_tau)
-        elif prev_s * cur_s < 0.0:
-            lo, hi, s_lo = prev_tau, tau, prev_s
-            for _ in range(24):
-                mid = 0.5 * (lo + hi)
-                s_mid = s_of(mid)
-                if s_lo * s_mid <= 0.0:
-                    hi = mid
-                else:
-                    lo, s_lo = mid, s_mid
-            roots.append(0.5 * (lo + hi))
-        prev_tau, prev_s = tau, cur_s
-    if prev_s == 0.0:
-        roots.append(1.0)
-    if not roots:
-        return None
-
-    t_a = track.points[k_val].timestamp.timestamp()
-    candidates = [t_a + tau * gap_s for tau in roots]
-    # Bias direzionale conforme alla semantica geofence: START -> ingresso
-    # piu' antico, END -> uscita piu' recente.
-    return min(candidates) if mode == "start" else max(candidates)
-
-
-def _legacy_gap_time(
+def _gap_crossing_time(
     track: Track, k_val: int, r_val: float, mode: str
 ) -> Optional[float]:
-    """Regola legacy sul chord (k_val, r_val) per il tempo di attraversamento
-    del gate: snap al bordo del buco di campionamento (smart recording / pause
-    GPX) SOLO se la proiezione spaziale concorda (gate oltre meta' del chord
-    verso quel bordo), altrimenti interpolazione lineare costante del tempo
-    lungo il chord.
+    """Tempo di attraversamento del gate sul chord (k_val, r_val).
 
-    mode: "start" (gate di ingresso) oppure "end" (gate di uscita).
-    Restituisce un timestamp epoch in secondi, o None se i timestamp
-    del chord non sono disponibili.
+    Sui chord normali (gap < GAP_REAL_MIN_GAP_S, tipico dello smart
+    recording 1-3s) vale la regola storica: snap al bordo del chord SOLO se
+    la proiezione spaziale concorda (r > 0.5 su START verso tb, r < 0.5 su
+    END verso ta; MAX_INTERP_GAP_S = 0 abilita lo snap condizionato su ogni
+    chord), altrimenti interpolazione lineare del tempo lungo il chord
+    (validata al centesimo di secondo sull'intero dataset). Sui buchi veri
+    di campionamento (dropout/pausa) l'attraversamento NON viene interpolato
+    nel vuoto: si assume il bordo del buco piu' vicino alla proiezione del
+    gate (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il comportamento
+    osservato di Strava su 4 passaggi con buco sul gate (errore medio ~0.1s;
+    riferimento: BePa UP TRAIL su Pedalata_pomeridiana_11072026.gpx,
+    dropout di 10s sul valle del gate START, r=0.49).
     """
     ta = track.points[k_val].timestamp
     tb = track.points[k_val + 1].timestamp
     if not ta or not tb:
         return None
     gap_s = (tb - ta).total_seconds()
+    if gap_s >= GAP_REAL_MIN_GAP_S:
+        # Buco vero: bordo del buco piu vicino alla proiezione del gate.
+        return (ta if r_val < 0.5 else tb).timestamp()
+    # Chord normale: snap condizionato o interpolazione lineare.
     if gap_s > MAX_INTERP_GAP_S:
         if mode == "start":
             if r_val > 0.5:
@@ -837,48 +670,6 @@ def _legacy_gap_time(
         elif r_val < 0.5:
             return ta.timestamp()
     return ta.timestamp() + r_val * gap_s
-
-
-def _gap_crossing_time(
-    track: Track,
-    k_val: int,
-    r_val: float,
-    mode: str,
-    gate_lat: Optional[float] = None,
-    gate_lon: Optional[float] = None,
-) -> Optional[float]:
-    """Tempo di attraversamento del gate sul chord (k_val, r_val).
-
-    Dispatcher: sui chord normali (gap < GAP_REAL_MIN_GAP_S) vale la regola
-    storica (_legacy_gap_time: snap condizionato o interpolazione lineare,
-    validata al centesimo sull'intero dataset). Sui buchi veri di
-    campionamento l'attraversamento NON viene interpolato nel vuoto: si
-    assume il bordo del buco piu' vicino alla proiezione del gate
-    (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il comportamento
-    osservato di Strava su 4 passaggi con buco (errore medio ~0.1s).
-    Se GAP_KIN_ENABLE e' attivo, sui buchi veri si prova prima la stima
-    cinematica Hermite (esperimento), con cap GAP_KIN_MAX_SHIFT_S rispetto
-    al bordo selezionato; in caso di stima inaffidabile si resta sul bordo.
-    """
-    ta = track.points[k_val].timestamp
-    tb = track.points[k_val + 1].timestamp
-    if not ta or not tb:
-        return None
-    gap_s = (tb - ta).total_seconds()
-    if gap_s < GAP_REAL_MIN_GAP_S:
-        return _legacy_gap_time(track, k_val, r_val, mode)
-    # Buco vero: bordo del buco piu' vicino alla proiezione del gate.
-    t_edge = (ta if r_val < 0.5 else tb).timestamp()
-    if not GAP_KIN_ENABLE or gate_lat is None or gate_lon is None:
-        return t_edge
-    t_kin = _kinematic_gap_time(track, k_val, mode, gate_lat, gate_lon, gap_s)
-    if t_kin is None:
-        return t_edge
-    if abs(t_kin - t_edge) > GAP_KIN_MAX_SHIFT_S:
-        t_kin = t_edge + (
-            GAP_KIN_MAX_SHIFT_S if t_kin > t_edge else -GAP_KIN_MAX_SHIFT_S
-        )
-    return t_kin
 
 
 def find_strava_segments_in_track(
@@ -925,39 +716,33 @@ def find_strava_segments_in_track(
             max_total_passes=MAX_TOTAL_PASSES,
         )
 
-        for reverse, t0_raw, t1_raw, length_m_raw, avg_dist_m, chain in occurrences:
+        for reverse, avg_dist_m, chain in occurrences:
             if not reverse:
-                seg_start_lat = segment_track.points[0].latitude
-                seg_start_lon = segment_track.points[0].longitude
-                seg_end_lat = segment_track.points[-1].latitude
-                seg_end_lon = segment_track.points[-1].longitude
+                seg_start, seg_end = segment_track.points[0], segment_track.points[-1]
             else:
-                seg_start_lat = segment_track.points[-1].latitude
-                seg_start_lon = segment_track.points[-1].longitude
-                seg_end_lat = segment_track.points[0].latitude
-                seg_end_lon = segment_track.points[0].longitude
-
+                seg_start, seg_end = segment_track.points[-1], segment_track.points[0]
             # t0_chain e' garantito essere il punto effettivo post-trim e post-salto temporale
             t0_chain = chain[0][1]
             t1_chain = chain[-1][1]
 
             # PROIEZIONE START (Usa t0_chain)
             k_start, r_start, d_start = _find_best_track_projection(
-                track, seg_start_lat, seg_start_lon, t0_chain, window=PROJECTION_WINDOW
+                track, seg_start.latitude, seg_start.longitude, t0_chain, window=PROJECTION_WINDOW
             )
 
             # PROIEZIONE END
             k_end, r_end, d_end = _find_best_track_projection(
-                track, seg_end_lat, seg_end_lon, t1_chain, window=PROJECTION_WINDOW
+                track, seg_end.latitude, seg_end.longitude, t1_chain, window=PROJECTION_WINDOW
             )
 
             # Proiezione END: valle in avanti con selezione deterministica
             # (tie-break a mediana, accept esteso fino a HARD_ACCEPT_M).
-            k_valley, r_valley, d_valley = _find_first_gate_valley(
-                track, seg_end_lat, seg_end_lon, t1_chain,
+            k_valley, r_valley, d_valley = _find_gate_valley(
+                track, seg_end.latitude, seg_end.longitude, t1_chain,
                 max_extra_idx=END_PROJECTION_EXTRA_IDX,
                 accept_m=END_PROJECTION_ACCEPT_M,
                 exit_rise_m=END_PROJECTION_EXIT_RISE_M,
+                backward=False,
             )
             if k_valley is not None:
                 k_end, r_end, d_end = k_valley, r_valley, d_valley
@@ -965,32 +750,20 @@ def find_strava_segments_in_track(
             # Proiezione START: valle all'indietro con i parametri dedicati
             # (finestra di scansione piu corta, accept/rise piu stretti per non
             # arretrare in loop di ingresso o passaggi precedenti del segmento).
-            k_last_valley, r_last_valley, d_last_valley = _find_last_gate_valley(
-                track, seg_start_lat, seg_start_lon, t0_chain,
+            k_last_valley, r_last_valley, d_last_valley = _find_gate_valley(
+                track, seg_start.latitude, seg_start.longitude, t0_chain,
                 max_extra_idx=START_PROJECTION_EXTRA_IDX,
                 accept_m=START_PROJECTION_ACCEPT_M,
                 exit_rise_m=START_PROJECTION_EXIT_RISE_M,
+                backward=True,
             )
             # Valle autoritativa anche per lo start: la selezione interna e'
             # deterministica, il punto-catena non influenza piu' il risultato.
             if k_last_valley is not None:
                 k_start, r_start, d_start = k_last_valley, r_last_valley, d_last_valley
 
-            def _get_interp_time(
-                k_val: int, r_val: float, mode: str, gate_lat: float, gate_lon: float
-            ) -> Optional[float]:
-                # Dispatcher sottile verso la funzione a livello modulo
-                # (permette monkeypatch nei test e riuso dell'estimatore).
-                return _gap_crossing_time(
-                    track, k_val, r_val, mode, gate_lat, gate_lon
-                )
-
-            ts_start = _get_interp_time(
-                k_start, r_start, "start", seg_start_lat, seg_start_lon
-            )
-            ts_end = _get_interp_time(
-                k_end, r_end, "end", seg_end_lat, seg_end_lon
-            )
+            ts_start = _gap_crossing_time(track, k_start, r_start, "start")
+            ts_end = _gap_crossing_time(track, k_end, r_end, "end")
 
             time_sec = None
             if ts_start is not None and ts_end is not None:
@@ -1010,7 +783,6 @@ def find_strava_segments_in_track(
                 avg_speed = (length_m / time_sec) * 3.6
 
             alts = [p.altitude for p in sub_pts if p.altitude is not None]
-            avg_alt = float(np.mean(alts)) if alts else None
 
             hrs = [p.heart_rate for p in sub_pts if p.heart_rate is not None]
             avg_hr = float(np.mean(hrs)) if hrs else None
@@ -1033,7 +805,6 @@ def find_strava_segments_in_track(
                     "length_m": length_m,
                     "time_sec": time_sec,
                     "avg_speed": avg_speed,
-                    "avg_alt": avg_alt,
                     "avg_hr": avg_hr,
                     "avg_dist_m": avg_dist_m,
                     "slope": slope,
@@ -1041,10 +812,6 @@ def find_strava_segments_in_track(
                     "direction": "reverse" if reverse else "forward",
                     "n_match_points": len(chain),
                     "segment_point_count": n_seg,
-                    "start_gate_idx": int(k_start),
-                    "end_gate_idx": int(k_end),
-                    "gate_d_start_m": float(d_start),
-                    "gate_d_end_m": float(d_end),
                 }
             )
 
