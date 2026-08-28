@@ -101,3 +101,12 @@ Pedalata_serale_15062026.fit:
 
 Pedalata_pomeridiana_02062026.gpx:
 - MoneLLine 4:48
+
+Pedalata_pomeridiana_08052026.gpx:
+- MoneLLine 2:19
+- BePa UP TRAIL 12:43
+- Vertical Trail 2:23
+- BePa UP TRAIL 13:30
+- MoneLLine 2:15
+- BePa UP TRAIL 16:27
+- Vertical Trail 2:19

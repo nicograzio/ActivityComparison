@@ -185,7 +185,7 @@ def _analyze_file(activity_file: Path) -> dict:
     # Nomi nell'ordine di prima comparsa: output deterministico (un set avrebbe
     # ordinamento dipendente dall'hash randomizzato delle stringhe)
     names = list(dict.fromkeys(
-        [f[0] for f in found_norm] + [s[0] for s in strava_by_name]
+        list(found_by_name.keys()) + list(strava_by_name.keys())
     ))
     for name in names:
         pairs, a_left, s_left = _pair_occurrences(name, found_by_name, strava_by_name)

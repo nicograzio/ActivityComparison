@@ -79,7 +79,7 @@ _DETAILED: bool = False
 # PARAMETRI OGGETTO DELL'OTTIMIZZAZIONE
 # ---------------------------------------------------------------------------
 PARAM_NAMES: List[str] = [
-    "DISTANCE_THRESHOLD_M", "MIN_MATCH_POINTS", "START_TOL_RATIO", "END_TOL_RATIO", "MAX_GAP_RATIO",
+    "DISTANCE_THRESHOLD_M", "START_TOL_RATIO", "END_TOL_RATIO", "MAX_GAP_RATIO",
     "CLUSTER_GAP_IDX", "PROGRESS_RATIO", "PROGRESS_SLACK_M", "MIN_DENSITY",
     "MAX_DENSITY", "MIN_LENGTH_M", "END_PROJECTION_EXTRA_IDX",
     "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
@@ -87,8 +87,8 @@ PARAM_NAMES: List[str] = [
     "START_PROJECTION_ACCEPT_M",
     "START_PROJECTION_EXIT_RISE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
-    "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", "MAX_TOTAL_PASSES",
-    "TIE_EPS_M", "HARD_ACCEPT_M", "GAP_REAL_MIN_GAP_S",
+    "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", #"MAX_TOTAL_PASSES",
+    "HARD_ACCEPT_M",
 ]
 
 DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
@@ -96,7 +96,6 @@ DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
 # Griglie di ricerca. Griglia vuota = parametro congelato (ma verificato come dead).
 SEARCH_SPACE: Dict[str, List[float]] = {
     "DISTANCE_THRESHOLD_M": [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 70.0],
-    "MIN_MATCH_POINTS": [3, 4, 5, 6, 8],
     "START_TOL_RATIO": [0.06, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25],
     "END_TOL_RATIO": [0.06, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25],
     "MAX_GAP_RATIO": [0.08, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.35],
@@ -118,10 +117,8 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "ANCHOR_SCAN_RANGE": [2, 3, 4, 5, 6, 8],
     "STATIONARY_SPEED_KMH": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     "OVERLAP_OCCUPANCY_THRESHOLD": [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
-    "MAX_TOTAL_PASSES": [4, 6, 8, 10, 12, 16, 20, 24],
-    "TIE_EPS_M": [0.0, 0.3, 0.6, 0.9, 1.2, 1.8, 2.5, 4.0],
+    #"MAX_TOTAL_PASSES": [4, 6, 8, 10, 12, 16, 20, 24],
     "HARD_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 55.0, 70.0, 90.0],
-    "GAP_REAL_MIN_GAP_S": [3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0],
 }
 
 # Range continui di ricerca (--method refine). A differenza delle griglie
@@ -136,8 +133,7 @@ SEARCH_SPACE: Dict[str, List[float]] = {
 # TRIM_CHECK_LIMIT 1800): sono valori che disattivano le rispettive
 # funzionalità, non candidati plausibili per l'ottimo.
 PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
-    "DISTANCE_THRESHOLD_M": (20.0, 70.0),
-    "MIN_MATCH_POINTS": (0.0, 10.0),
+    "DISTANCE_THRESHOLD_M": (10.0, 100.0),
     "START_TOL_RATIO": (0.0, 0.5),
     "END_TOL_RATIO": (0.0, 0.5),
     "MAX_GAP_RATIO": (0.0, 0.6),
@@ -161,14 +157,9 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "ANCHOR_SCAN_RANGE": (0.0, 20.0),
     "STATIONARY_SPEED_KMH": (0.0, 4.0),
     "OVERLAP_OCCUPANCY_THRESHOLD": (0.1, 0.85),
-    "MAX_TOTAL_PASSES": (2.0, 5.0),
-    # Finestra di tie-break (m) nella selezione mediana delle proiezioni gate
-    "TIE_EPS_M": (0.0, 5.0),
+    #"MAX_TOTAL_PASSES": (2.0, 5.0),
     # Tetto rigido di accettazione (m) per le valli di proiezione start/end
     "HARD_ACCEPT_M": (18.0, 99.0),
-    # Soglia (s) di "buco vero" per lo snap al bordo piu' vicino del gate
-    # (sotto soglia: interpolazione lineare storica)
-    "GAP_REAL_MIN_GAP_S": (0.0, 20.0),
 }
 
 
@@ -210,12 +201,12 @@ def _fix_density_constraint(cfg: Dict[str, float]) -> None:
 
 # Parametri più influenti → testati per primi nel coordinate descent (classic)
 CRITICAL_PARAMS = [
-    "DISTANCE_THRESHOLD_M", "MIN_MATCH_POINTS", "START_TOL_RATIO", "END_TOL_RATIO", "MAX_GAP_RATIO",
+    "DISTANCE_THRESHOLD_M", "START_TOL_RATIO", "END_TOL_RATIO", "MAX_GAP_RATIO",
     "PROGRESS_RATIO", "PROGRESS_SLACK_M", "MIN_DENSITY", "MAX_DENSITY",
     "MIN_LENGTH_M", "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
     "START_PROJECTION_ACCEPT_M", "START_PROJECTION_EXIT_RISE_M",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD",
-    "TIE_EPS_M", "HARD_ACCEPT_M",
+    "HARD_ACCEPT_M",
 ]
 
 
@@ -305,10 +296,10 @@ def load_activity_tracks() -> List[Tuple[str, Track]]:
 # ---------------------------------------------------------------------------
 # Parametri che nel codice vengono usati come interi (range/min/max/indici)
 INT_PARAMS = {
-    "MIN_MATCH_POINTS", "CLUSTER_GAP_IDX",
+    "CLUSTER_GAP_IDX",
     "END_PROJECTION_EXTRA_IDX", "START_PROJECTION_EXTRA_IDX",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP",
-    "ANCHOR_SCAN_RANGE", "MAX_TOTAL_PASSES",
+    "ANCHOR_SCAN_RANGE", #"MAX_TOTAL_PASSES",
 }
 
 
@@ -362,7 +353,6 @@ def _score_track(
     track: Track,
     strava_list: Sequence[Tuple[str, Optional[float], str]],
     distance: float,
-    min_points: int,
     segments: List[dict],
 ) -> Dict[str, float]:
     """Calcola i contatori di qualità per UNA traccia (aggregati dal main).
@@ -373,7 +363,6 @@ def _score_track(
     found = find_strava_segments_in_track(
         segments, track,
         distance_threshold_m=distance,
-        min_match_points=min_points,
     )
     found_norm = [
         (normalize(o["segment_name"]), o["time_sec"], o["segment_name"], o["direction"])
@@ -396,7 +385,7 @@ def _score_track(
 
     # Ordine di prima comparsa: deterministico (niente iterazione di un set)
     names = list(dict.fromkeys(
-        [f[0] for f in found_norm] + [s[0] for s in strava_by_name]
+        list(found_by_name.keys()) + list(strava_by_name.keys())
     ))
     for name in names:
         algo_occ = found_by_name.get(name, ())
@@ -450,13 +439,15 @@ def _score_track(
 
 
 def _eval_task(payload) -> Dict[str, float]:
-    """Entry point del worker: (overrides, indice traccia) → contatori della traccia.
+    """Entry point del worker: (config completa, indice traccia) → contatori.
 
-    Applica la config al proprio modulo core.strava_analyzer prima di calcolare,
-    così il risultato non dipende dall'ordine dei task nel pool.
+    Applica la config COMPLETA (default + overrides + vincolo densità) al
+    proprio modulo core.strava_analyzer prima di calcolare: ogni task parte da
+    uno stato pulito e NON accumula i parametri dei task precedenti.
     """
-    overrides, index = payload
-    _apply_overrides(overrides)
+    config, index = payload
+    _fix_density_constraint(config)
+    _apply_overrides(config)
 
     # I dati del worker vengono caricati UNA volta nel processo dall'initializer
     # (_init_optim_worker), quindi in condizioni normali non sono mai None. Ci
@@ -473,10 +464,9 @@ def _eval_task(payload) -> Dict[str, float]:
     assert activity is not None and segments is not None and strava is not None
 
     name, track = activity[index]
-    distance = overrides.get("DISTANCE_THRESHOLD_M", DEFAULTS["DISTANCE_THRESHOLD_M"])
-    min_points = int(overrides.get("MIN_MATCH_POINTS", DEFAULTS["MIN_MATCH_POINTS"]))
+    distance = float(config.get("DISTANCE_THRESHOLD_M", DEFAULTS["DISTANCE_THRESHOLD_M"]))
     strava_list = strava.get(name, [])
-    return _score_track(track, strava_list, distance, min_points, segments)
+    return _score_track(track, strava_list, distance, segments)
 
 
 def _evaluate_counters(
@@ -485,7 +475,6 @@ def _evaluate_counters(
     strava: Dict[str, List[Tuple[str, int, str]]],
     segments: List[dict],
     distance_threshold: float,
-    min_match_points: int,
 ) -> List[dict]:
     """Contatori di qualità per ogni traccia: in parallelo sul pool persistente,
     o in fallback sequenziale (stesso codice, nel processo principale)."""
@@ -506,7 +495,7 @@ def _evaluate_counters(
         for name, track in activity_tracks:
             strava_list = strava.get(name, [])
             counters.append(
-                _score_track(track, strava_list, distance_threshold, min_match_points, segments)
+                _score_track(track, strava_list, distance_threshold, segments)
             )
     finally:
         _restore(saved)
@@ -534,25 +523,33 @@ def evaluate(
 ) -> Metrics:
     """Calcola il punteggio qualità per la config `overrides` (baseline = {}).
 
-    NOTA: DISTANCE_THRESHOLD_M e MIN_MATCH_POINTS vengono passati esplicitamente
-    a find_strava_segments_in_track perché i default della firma sono vincolati
-    al momento della definizione della funzione (non leggono il modulo a runtime).
+    La config COMPLETA (default + overrides + vincolo densità) viene applicata
+    ai worker del pool: ogni valutazione parte da uno stato pulito, quindi il
+    risultato non dipende dall'ordine/accumulo delle valutazioni precedenti.
+
+    NOTA: DISTANCE_THRESHOLD_M viene passato esplicitamente a
+    find_strava_segments_in_track perché il default della firma è vincolato
+    al momento della definizione della funzione (non legge il modulo a runtime).
     """
     t0 = time.perf_counter()
 
-    distance_threshold = overrides.get("DISTANCE_THRESHOLD_M", DEFAULTS["DISTANCE_THRESHOLD_M"])
-    min_match_points = int(overrides.get("MIN_MATCH_POINTS", DEFAULTS["MIN_MATCH_POINTS"]))
+    full_cfg = dict(DEFAULTS)
+    full_cfg.update(overrides)
+    _fix_density_constraint(full_cfg)
+
+    distance_threshold = float(full_cfg["DISTANCE_THRESHOLD_M"])
     if _DETAILED:
-        cfg_str = dict(overrides) if overrides else "baseline"
+        # Configurazione completa per debugging: identica a quella applicata
+        # ai worker del pool (stessa chiave `full_cfg`).
         print(
-            f"    [evaluate] valutazione config={cfg_str} "
-            f"(dist={distance_threshold}, min_pts={min_match_points})"
+            f"    [evaluate] valutazione config={full_cfg} "
+            f"(dist={distance_threshold})"
         )
 
     # Aggregazione dei contatori per traccia (in parallelo o in fallback sequenziale)
     counters = _evaluate_counters(
-        overrides, activity_tracks, strava, segments,
-        distance_threshold, min_match_points,
+        full_cfg, activity_tracks, strava, segments,
+        distance_threshold,
     )
 
     total_seg_strava = sum(c["n_strava"] for c in counters)
@@ -601,7 +598,7 @@ def evaluate(
         time_acc_pct=time_acc_pct, missing=total_missing, extra=total_extra,
         paired=total_paired, mean_abs_delta=mean_abs_delta, rms_delta=rms_delta,
         matched_ok=matched_ok, matched_small=matched_small, matched_off=matched_off,
-        config=dict(DEFAULTS, **overrides), elapsed_s=time.perf_counter() - t0,
+        config=full_cfg, elapsed_s=time.perf_counter() - t0,
     )
 
 

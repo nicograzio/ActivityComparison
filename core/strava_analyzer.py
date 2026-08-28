@@ -19,70 +19,54 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
 # Soglia di vicinanza GPS per considerare un punto di traccia come candidato
-DISTANCE_THRESHOLD_M = 15.0
-# Numero minimo di punti di traccia che devono coincidere con il segmento
-MIN_MATCH_POINTS = 5
+DISTANCE_THRESHOLD_M = 25.0
 # Rapporto per definire la tolleranza di inizio (in base ai punti totali)
-START_TOL_RATIO = 0.5
+START_TOL_RATIO = 0.4
 # Rapporto per definire la tolleranza di fine (in base ai punti totali)
-END_TOL_RATIO = 0.0
+END_TOL_RATIO = 0.25
 # Rapporto massimo di gap (punti segmento senza candidati) rispetto al totale
 MAX_GAP_RATIO = 0.3
 # Distanza minima tra indici di traccia per raggruppare i candidati (anchors)
 CLUSTER_GAP_IDX = 10
 
 # Parametri per la coerenza del progresso lungo il segmento
-PROGRESS_RATIO = 0
-PROGRESS_SLACK_M = 20
+PROGRESS_RATIO = 2.5
+PROGRESS_SLACK_M = 50
 
 # Parametri di densita' e lunghezza per la validita' di un'occorrenza
 MIN_DENSITY = 0.5
 MAX_DENSITY = 1.5
-MIN_LENGTH_M = 38.2
+MIN_LENGTH_M = 0.0
 
 # Parametri per la proiezione fine dei tempi di inizio/fine
 # Indice di scansione per trovare il valle della fine (ridotto da 150)
-END_PROJECTION_EXTRA_IDX = 27
-END_PROJECTION_ACCEPT_M = 25.0
-END_PROJECTION_EXIT_RISE_M = 8.0
+END_PROJECTION_EXTRA_IDX = 30
+END_PROJECTION_ACCEPT_M = 45.0
+END_PROJECTION_EXIT_RISE_M = 3.0
 
 # Parametri per la proiezione dello START (simmetrici a quelli della fine).
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
 # del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
-START_PROJECTION_EXTRA_IDX = 150
-START_PROJECTION_ACCEPT_M = 19.0
+START_PROJECTION_EXTRA_IDX = 120
+START_PROJECTION_ACCEPT_M = 20.0
 START_PROJECTION_EXIT_RISE_M = 3.0
 
 # Parametri per la gestione degli ingressi e passaggi spuri
-TRIM_REF_POINTS = 13
+TRIM_REF_POINTS = 1
 TRIM_CHECK_LIMIT = 60
-TRIM_INDEX_GAP = 21
+TRIM_INDEX_GAP = 20
 
 # Parametri per il raggruppamento degli anchor point iniziali
-ANCHOR_SCAN_RANGE = 20
+ANCHOR_SCAN_RANGE = 5
 
 # Parametri algoritmi di selezione
-STATIONARY_SPEED_KMH = 1.0
-OVERLAP_OCCUPANCY_THRESHOLD = 0.4
+STATIONARY_SPEED_KMH = 0.0
+OVERLAP_OCCUPANCY_THRESHOLD = 0.2
 # Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
 MAX_TOTAL_PASSES = 5
-# Tolleranza (metri) oltre il minimo oltre cui due candidati sono considerati
-# "in tie" sull'altipiano di jitter GPS: START tiene il piu' antico (ingresso
-# nel geofence), END il piu' recente (uscita), rendendo il risultato
-# indipendente dal centro della catena e dal formato (FIT vs GPX).
-TIE_EPS_M = 0.7
 # Distanza massima (metri) per accettare comunque il valle anche se oltre
 # ACCEPT_M: preferisce il minimo reale alla proiezione locale della catena.
 HARD_ACCEPT_M = 45.0
-# --- Attraversamento dei buchi di campionamento ---
-# Quando un gate cade su un chord, l'attraversamento del gate NON viene mai
-# interpolato linearmente lungo il chord: si assume il bordo piu' vicino alla
-# proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il
-# comportamento osservato di Strava (errore medio ~0.1s).
-# Con GAP_REAL_MIN_GAP_S = 0.0 ogni corda e' trattata come un attraversamento
-# di gate: e' questo il parametro che consente la corrispondenza temporale
-# esatta con Strava (delta 0.000s / correttezza 100%).
-GAP_REAL_MIN_GAP_S = 0.0
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -258,7 +242,7 @@ def _median_tie_selection(
 ) -> Tuple[int, float, float]:
     """Sceglie, tra i candidati quasi-equidistanti dal gate, il punto mediano
     del run contiguo di indici che contiene il minimo assoluto."""
-    tie = sorted(s for s in seen if s[2] <= best_d + TIE_EPS_M)
+    tie = sorted(s for s in seen if s[2] <= best_d)
     k_argmin = min(tie, key=lambda s: s[2])[0]
     groups: List[List[Tuple[int, float, float]]] = [[tie[0]]]
     for prev, item in zip(tie, tie[1:]):
@@ -536,7 +520,6 @@ def _find_occurrences(
     candidates: List[np.ndarray],
     track_profile: List[float],
     segment_profile: List[float],
-    min_match_points: int,
     start_tol: int,
     end_tol: int,
     max_gap: int,
@@ -578,6 +561,8 @@ def _find_occurrences(
                         for k in range(j, min(j + ANCHOR_SCAN_RANGE, len(arr))):
                             anchor_pool.append(int(arr[k]))
                     prev = x
+                #if len(arr) > 0:
+                    #anchor_pool.append(int(arr[0]))
             anchors = list(dict.fromkeys(anchor_pool))
 
             found = False
@@ -607,7 +592,7 @@ def _find_occurrences(
                 t0 = min(ti for _, ti in chain)
                 t1 = max(ti for _, ti in chain)
                 length_m = track_profile[t1] - track_profile[t0]
-                if length_m < min_length_m or len(chain) < min_match_points:
+                if length_m < min_length_m:
                     continue
                 if not (min_density * seg_length <= length_m <= max_density * seg_length):
                     continue
@@ -634,10 +619,10 @@ def _gap_crossing_time(
 ) -> Optional[float]:
     """Tempo di attraversamento del gate sul chord (k_val, r_val).
 
-    Con GAP_REAL_MIN_GAP_S = 0.0 ogni corda e' trattata come un attraversamento
-    di gate: NON viene mai interpolata linearmente nel vuoto. Si assume il
-    bordo del chord piu' vicino alla proiezione del gate (r < 0.5 -> ta,
-    r >= 0.5 -> tb), in accordo con il comportamento osservato di Strava
+    Ogni corda e' trattata come un attraversamento di gate: NON viene mai
+    interpolata linearmente nel vuoto. Si assume il bordo del chord piu' vicino
+    alla proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il
+    comportamento osservato di Strava
     (errore medio ~0.1s su 4 passaggi con buco sul gate; riferimento: BePa UP
     TRAIL su Pedalata_pomeridiana_11072026.gpx, dropout di 10s, r=0.49).
     """
@@ -653,7 +638,6 @@ def find_strava_segments_in_track(
     strava_segments: List[dict],
     track: Track,
     distance_threshold_m: float = DISTANCE_THRESHOLD_M,
-    min_match_points: int = MIN_MATCH_POINTS,
 ) -> List[dict]:
     """Individua i segmenti Strava all'interno di una traccia caricata."""
     if not track or not track.points or len(track.points) < 2:
@@ -665,9 +649,6 @@ def find_strava_segments_in_track(
     for strava_seg in strava_segments:
         segment_track = strava_seg["track"]
         n_seg = len(segment_track.points)
-        if n_seg < min_match_points:
-            continue
-
         candidates = _candidate_track_indices(track, segment_track, distance_threshold_m)
         segment_profile, _ = track_distance_profile(segment_track)
 
@@ -681,7 +662,6 @@ def find_strava_segments_in_track(
             candidates,
             track_profile,
             segment_profile,
-            min_match_points=min_match_points,
             start_tol=start_tol,
             end_tol=end_tol,
             max_gap=max_gap,
