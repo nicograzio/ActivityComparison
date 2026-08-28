@@ -88,7 +88,6 @@ PARAM_NAMES: List[str] = [
     "START_PROJECTION_EXIT_RISE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", #"MAX_TOTAL_PASSES",
-    "HARD_ACCEPT_M",
 ]
 
 DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
@@ -118,7 +117,6 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "STATIONARY_SPEED_KMH": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     "OVERLAP_OCCUPANCY_THRESHOLD": [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
     #"MAX_TOTAL_PASSES": [4, 6, 8, 10, 12, 16, 20, 24],
-    "HARD_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 55.0, 70.0, 90.0],
 }
 
 # Range continui di ricerca (--method refine). A differenza delle griglie
@@ -158,8 +156,6 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "STATIONARY_SPEED_KMH": (0.0, 4.0),
     "OVERLAP_OCCUPANCY_THRESHOLD": (0.1, 0.85),
     #"MAX_TOTAL_PASSES": (2.0, 5.0),
-    # Tetto rigido di accettazione (m) per le valli di proiezione start/end
-    "HARD_ACCEPT_M": (18.0, 99.0),
 }
 
 
@@ -206,7 +202,6 @@ CRITICAL_PARAMS = [
     "MIN_LENGTH_M", "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
     "START_PROJECTION_ACCEPT_M", "START_PROJECTION_EXIT_RISE_M",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD",
-    "HARD_ACCEPT_M",
 ]
 
 
@@ -656,6 +651,10 @@ def coordinate_descent(
                     improved_once = True
                     if _DETAILED:
                         print(f"      [coord. descent] >>> nuovo best Q={m.quality:6.1f} per {name}={value!s}")
+                    if best.quality >= 100.0 - 1e-9:
+                        if not quiet:
+                            print("    [coord. descent] Punteggio massimo raggiunto (100.0%)!")
+                        return best
             if not quiet and rnd == 1:
                 print()
         if not improved_once:
@@ -695,6 +694,10 @@ def random_search(
             best = m
             if _DETAILED:
                 print(f"      [random search] >>> nuovo best Q={m.quality:6.1f}")
+            if best.quality >= 100.0 - 1e-9:
+                if not quiet:
+                    print("    [random search] Punteggio massimo raggiunto (100.0%)!")
+                return best
     return best
 
 
@@ -865,9 +868,15 @@ def adaptive_multiparam_search(
                     restart_best_idx = cand_idx
                     if _DETAILED:
                         print(f"      [adaptive] batch {b} it {it+1}: nuovo best Q={m.quality:6.1f}")
+                    if restart_best.quality >= 100.0 - 1e-9:
+                        break
                     for name in chosen:
                         batch_hits[name] = batch_hits.get(name, 0) + 1
                         param_hits[name] = param_hits.get(name, 0) + 1
+
+            if restart_best.quality >= 100.0 - 1e-9:
+                stop_reason = "punteggio massimo raggiunto (100%)"
+                break
 
             delta = restart_best.quality - q_before
             batch_deltas.append(delta)
@@ -999,6 +1008,10 @@ def polish_pass(
                     improved = True
                     if _DETAILED:
                         print(f"      [polish] >>> nuovo best Q={m.quality:6.1f} (round {rnd})")
+                    if best.quality >= 100.0 - 1e-9:
+                        if not quiet:
+                            print("      [polish] Punteggio massimo raggiunto (100.0%)!")
+                        return best, n_evals
         if not quiet:
             print(f"      [polish] round {rnd} → {best.short()}")
         elif _DETAILED:
@@ -1210,7 +1223,14 @@ def refine_search(
     n_evals += 1
     q_ref = best.quality
 
-    if not quiet:
+    info_common = {
+        "method": "refine",
+        "esclusi": sorted(excluded),
+    }
+
+    if best.quality >= 100.0 - 1e-9:
+        return best, {**info_common, "stop_reason": "punteggio massimo raggiunto (baseline)", "batches": 0, "n_evals": n_evals, "improved_rounds": 0, "info_zoom": {}}
+
         fuori = [
             name for name in PARAM_NAMES
             if not (bounds[name][0] - 1e-12 <= float(DEFAULTS[name]) <= bounds[name][1] + 1e-12)
@@ -1248,8 +1268,15 @@ def refine_search(
                 q_best = m.quality
                 v_best = pv
             delta_max = max(delta_max, abs(m.quality - q_ref))
+            if m.quality >= 100.0 - 1e-9:
+                # Se becchiamo il 100% già nello sweep, possiamo finire qui Fase A1
+                # Ma per semplicità lasciamo finire lo sweep e usciamo dopo
+                pass
         sweep_best[name] = (v_best, q_best)
         sweep_delta[name] = delta_max
+        if q_best >= 100.0 - 1e-9:
+            # Usciamo prima da tutti i parametri se uno ha già 100%
+            break
         if delta_max < 1e-9:
             excluded.add(name)
         if not quiet:
@@ -1276,6 +1303,9 @@ def refine_search(
             f"top sensibilità: {top}"
         )
 
+    if best.quality >= 100.0 - 1e-9:
+        return best, {**info_common, "stop_reason": "punteggio massimo raggiunto (A1)", "batches": 0, "n_evals": n_evals, "improved_rounds": 0, "info_zoom": {}}
+
     # --- Fase A2: discesa greedy continua sui migliori punti dello sweep ---
     if not quiet:
         print("    [refine] fase A2: discesa greedy...")
@@ -1293,6 +1323,11 @@ def refine_search(
             start = cand
             if _DETAILED:
                 print(f"      [refine] >>> nuovo best Q={m.quality:6.1f} (greedy fase A2)")
+            if best.quality >= 100.0 - 1e-9:
+                break
+    
+    if best.quality >= 100.0 - 1e-9:
+        return best, {**info_common, "stop_reason": "punteggio massimo raggiunto (A2)", "batches": 0, "n_evals": n_evals, "improved_rounds": 0, "info_zoom": {}}
 
     # --- Fase A3: esplorazione congiunta (Latin Hypercube) ---
     lhs_names = sorted(set(bounds) - excluded)
@@ -1318,6 +1353,11 @@ def refine_search(
                     print(f"      [refine] LHS {i + 1}/{n_explore}: nuovo best → {best.short()}")
                 elif _DETAILED:
                     print(f"      [refine] >>> LHS {i + 1}/{n_explore}: nuovo best Q={m.quality:6.1f}")
+                if best.quality >= 100.0 - 1e-9:
+                    break
+
+    if best.quality >= 100.0 - 1e-9:
+        return best, {**info_common, "stop_reason": "punteggio massimo raggiunto (A3/LHS)", "batches": 0, "n_evals": n_evals, "improved_rounds": 0, "info_zoom": {}}
 
     # --- Fase B: affinamento iterativo (zoom verso i miglioramenti) ---
     centers: Dict[str, float] = {
@@ -1379,6 +1419,12 @@ def refine_search(
                     hit_tot[name] = hit_tot.get(name, 0) + 1
                 if _DETAILED:
                     print(f"      [refine] >>> nuovo best Q={m.quality:6.1f} (fase B)")
+                if best.quality >= 100.0 - 1e-9:
+                    break
+
+        if best.quality >= 100.0 - 1e-9:
+            stop_reason = "punteggio massimo raggiunto (affinamento Fase B)"
+            break
 
         # Restringimento adattivo degli intervalli + recentro sul best corrente
         drops: List[str] = []

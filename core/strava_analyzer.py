@@ -19,7 +19,7 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
 # Soglia di vicinanza GPS per considerare un punto di traccia come candidato
-DISTANCE_THRESHOLD_M = 25.0
+DISTANCE_THRESHOLD_M = 15.0
 # Rapporto per definire la tolleranza di inizio (in base ai punti totali)
 START_TOL_RATIO = 0.4
 # Rapporto per definire la tolleranza di fine (in base ai punti totali)
@@ -48,7 +48,7 @@ END_PROJECTION_EXIT_RISE_M = 3.0
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
 # del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
 START_PROJECTION_EXTRA_IDX = 120
-START_PROJECTION_ACCEPT_M = 20.0
+START_PROJECTION_ACCEPT_M = 45.0
 START_PROJECTION_EXIT_RISE_M = 3.0
 
 # Parametri per la gestione degli ingressi e passaggi spuri
@@ -62,11 +62,10 @@ ANCHOR_SCAN_RANGE = 5
 # Parametri algoritmi di selezione
 STATIONARY_SPEED_KMH = 0.0
 OVERLAP_OCCUPANCY_THRESHOLD = 0.2
+
 # Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
 MAX_TOTAL_PASSES = 5
-# Distanza massima (metri) per accettare comunque il valle anche se oltre
-# ACCEPT_M: preferisce il minimo reale alla proiezione locale della catena.
-HARD_ACCEPT_M = 45.0
+
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -210,7 +209,6 @@ def _find_gate_valley(
         end_k = min(len(track.points) - 2, center_idx + max_extra_idx)
         scan = range(start_k, end_k + 1)
 
-    accept_limit = max(accept_m, HARD_ACCEPT_M)
     seen: List[Tuple[int, float, float]] = []  # (k, r, d)
     run_min = float("inf")
 
@@ -221,14 +219,14 @@ def _find_gate_valley(
         seen.append((k, r, d))
         if d < run_min:
             run_min = d
-        elif d - run_min > exit_rise_m and run_min <= accept_limit:
+        elif d - run_min > exit_rise_m and run_min <= accept_m:
             break
 
     if not seen:
         return None, 0.0, float("inf")
 
     best_d = min(s[2] for s in seen)
-    if not (best_d <= accept_m or best_d <= HARD_ACCEPT_M):
+    if best_d > accept_m:
         return None, 0.0, float("inf")
 
     # Tie-break: mediana del run contiguo contenente il minimo (stabile tra
@@ -693,7 +691,7 @@ def find_strava_segments_in_track(
             )
 
             # Proiezione END: valle in avanti con selezione deterministica
-            # (tie-break a mediana, accept esteso fino a HARD_ACCEPT_M).
+            # (tie-break a mediana).
             k_valley, r_valley, d_valley = _find_gate_valley(
                 track, seg_end.latitude, seg_end.longitude, t1_chain,
                 max_extra_idx=END_PROJECTION_EXTRA_IDX,
