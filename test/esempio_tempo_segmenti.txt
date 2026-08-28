@@ -82,3 +82,22 @@ Pedalata_serale_19082026.fit:
 - MoneLLine 2:40
 - BePa UP TRAIL 21:58
 - Pistino Etilico 21:20
+
+Pedalata_serale_29062026.gpx:
+- MoneLLine 2:12
+
+Pedalata_serale_16062026.gpx:
+- MoneLLine 2:16
+- BePa UP TRAIL 15:25
+- MoneLLine 2:08
+
+Pedalata_serale_15062026.gpx:
+- MoneLLine 2:19
+- BePa UP TRAIL 15:25
+
+Pedalata_serale_15062026.fit:
+- MoneLLine 2:19
+- BePa UP TRAIL 15:25
+
+Pedalata_pomeridiana_02062026.gpx:
+- MoneLLine 4:48

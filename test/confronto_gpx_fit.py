@@ -38,8 +38,8 @@ import fitparse
 import gpxpy
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "Examples"
-DEFAULT_GPX = EXAMPLES_DIR / "Pedalata_serale_19082026.gpx"
-DEFAULT_FIT = EXAMPLES_DIR / "Pedalata_serale_19082026.fit"
+DEFAULT_GPX = EXAMPLES_DIR / "Pedalata_serale_15062026.gpx"
+DEFAULT_FIT = EXAMPLES_DIR / "Pedalata_serale_15062026.fit"
 
 # Fattore di conversione delle coordinate FIT (semicircles -> gradi decimali).
 SEMICIRCLES_TO_DEG = 180.0 / (2**31)

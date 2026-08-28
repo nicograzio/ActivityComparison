@@ -1255,6 +1255,22 @@ def refine_search(
         sweep_delta[name] = delta_max
         if delta_max < 1e-9:
             excluded.add(name)
+        if not quiet:
+            # Diagnostica: chiarisce che si tiene il MIGLIOR punto dello sweep,
+            # non l'ultimo testato (la scansione spesso mostra Q decrescenti).
+            if q_best > q_ref + 1e-9:
+                esito = (
+                    f"→ scelto {name}={v_best:.4g} (Q={q_best:.2f}) — "
+                    f"il migliore tra i punti testati (baseline Q={q_ref:.2f})"
+                )
+            else:
+                esito = (
+                    f"→ tenuto baseline {name}={cur:.4g} (Q={q_ref:.2f}): "
+                    f"nessun punto testato migliora"
+                )
+            print(
+                f"    [refine]   A1 {name:<28} Δmax={sweep_delta[name]:6.2f}  {esito}"
+            )
     if not quiet:
         sensibili = sorted(set(sweep_best) - excluded, key=lambda n: -sweep_delta[n])
         top = ", ".join(f"{n} ({sweep_delta[n]:.2f})" for n in sensibili[:5])
