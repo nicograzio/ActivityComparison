@@ -19,13 +19,13 @@ from core.track import Track, TrackPoint
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
 # Soglia di vicinanza GPS per considerare un punto di traccia come candidato
-DISTANCE_THRESHOLD_M = 42.5
+DISTANCE_THRESHOLD_M = 15.0
 # Numero minimo di punti di traccia che devono coincidere con il segmento
 MIN_MATCH_POINTS = 5
 # Rapporto per definire la tolleranza di inizio (in base ai punti totali)
 START_TOL_RATIO = 0.5
 # Rapporto per definire la tolleranza di fine (in base ai punti totali)
-END_TOL_RATIO = 0
+END_TOL_RATIO = 0.0
 # Rapporto massimo di gap (punti segmento senza candidati) rispetto al totale
 MAX_GAP_RATIO = 0.3
 # Distanza minima tra indici di traccia per raggruppare i candidati (anchors)
@@ -38,20 +38,20 @@ PROGRESS_SLACK_M = 20
 # Parametri di densita' e lunghezza per la validita' di un'occorrenza
 MIN_DENSITY = 0.5
 MAX_DENSITY = 1.5
-MIN_LENGTH_M = 20.0
+MIN_LENGTH_M = 38.2
 
 # Parametri per la proiezione fine dei tempi di inizio/fine
 PROJECTION_WINDOW = 0
 # Indice di scansione per trovare il valle della fine (ridotto da 150)
-END_PROJECTION_EXTRA_IDX = 20
+END_PROJECTION_EXTRA_IDX = 27
 END_PROJECTION_ACCEPT_M = 25.0
-END_PROJECTION_EXIT_RISE_M = 7.682230450012804
+END_PROJECTION_EXIT_RISE_M = 8.0
 
 # Parametri per la proiezione dello START (simmetrici a quelli della fine).
 # exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
 # del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
 START_PROJECTION_EXTRA_IDX = 150
-START_PROJECTION_ACCEPT_M = 25.0
+START_PROJECTION_ACCEPT_M = 19.0
 START_PROJECTION_EXIT_RISE_M = 3.0
 
 # Parametri per la gestione degli ingressi e passaggi spuri
@@ -63,7 +63,7 @@ TRIM_INDEX_GAP = 21
 ANCHOR_SCAN_RANGE = 20
 
 # Parametri algoritmi di selezione
-STATIONARY_SPEED_KMH = 1.333333333333
+STATIONARY_SPEED_KMH = 1.0
 OVERLAP_OCCUPANCY_THRESHOLD = 0.4
 # Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
 MAX_TOTAL_PASSES = 5
@@ -71,14 +71,14 @@ MAX_TOTAL_PASSES = 5
 # "in tie" sull'altipiano di jitter GPS: START tiene il piu' antico (ingresso
 # nel geofence), END il piu' recente (uscita), rendendo il risultato
 # indipendente dal centro della catena e dal formato (FIT vs GPX).
-TIE_EPS_M = 0.9
+TIE_EPS_M = 0.7
 # Distanza massima (metri) per accettare comunque il valle anche se oltre
 # ACCEPT_M: preferisce il minimo reale alla proiezione locale della catena.
 HARD_ACCEPT_M = 45.0
 # Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
 # interpolazione lineare del tempo sul gate e' disattivata (smart recording /
 # pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
-MAX_INTERP_GAP_S = 0.9647740472829456
+MAX_INTERP_GAP_S = 1
 # --- Attraversamento dei buchi di campionamento ---
 # Quando un gate cade su un chord con un buco di campionamento vero (dropout
 # GPS / pausa), interpolare il tempo attraverso il buco collocherebbe
@@ -91,7 +91,7 @@ MAX_INTERP_GAP_S = 0.9647740472829456
 # e si attiva lo snap al bordo piu' vicino; i chord normali dello smart
 # recording (1-3s) restano sull'interpolazione lineare, validata al
 # centesimo di secondo sull'intero dataset.
-GAP_REAL_MIN_GAP_S = 3.5614020778632245
+GAP_REAL_MIN_GAP_S = 0.0
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0

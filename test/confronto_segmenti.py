@@ -98,6 +98,7 @@ def fmt_time(sec):
     if h:
         return f"{h}:{m:02d}:{s:02d}.{ms:03d}"
     return f"{m}:{s:02d}.{ms:03d}"
+
 def _pair_occurrences(name, found_by_name, strava_by_name):
     """Accoppia le occorrenze algoritmo/Strava dello stesso segmento
     minimizzando le differenze di tempo (greedy ad ogni passo prende
