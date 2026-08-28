@@ -81,14 +81,14 @@ _DETAILED: bool = False
 PARAM_NAMES: List[str] = [
     "DISTANCE_THRESHOLD_M", "MIN_MATCH_POINTS", "START_TOL_RATIO", "END_TOL_RATIO", "MAX_GAP_RATIO",
     "CLUSTER_GAP_IDX", "PROGRESS_RATIO", "PROGRESS_SLACK_M", "MIN_DENSITY",
-    "MAX_DENSITY", "MIN_LENGTH_M", "PROJECTION_WINDOW", "END_PROJECTION_EXTRA_IDX",
+    "MAX_DENSITY", "MIN_LENGTH_M", "END_PROJECTION_EXTRA_IDX",
     "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
     "START_PROJECTION_EXTRA_IDX",
     "START_PROJECTION_ACCEPT_M",
     "START_PROJECTION_EXIT_RISE_M",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP", "ANCHOR_SCAN_RANGE",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD", "MAX_TOTAL_PASSES",
-    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S", "GAP_REAL_MIN_GAP_S",
+    "TIE_EPS_M", "HARD_ACCEPT_M", "GAP_REAL_MIN_GAP_S",
 ]
 
 DEFAULTS: Dict[str, float] = {name: getattr(sa, name) for name in PARAM_NAMES}
@@ -106,7 +106,6 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "MIN_DENSITY": [0.30, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80],
     "MAX_DENSITY": [1.20, 1.30, 1.40, 1.50, 1.60, 1.70, 1.80, 2.00],
     "MIN_LENGTH_M": [1.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0],
-    "PROJECTION_WINDOW": [20, 30, 40, 50, 60, 70, 80, 100],
     "END_PROJECTION_EXTRA_IDX": [30, 40, 50, 60, 70, 80, 100, 120],
     "END_PROJECTION_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 65.0],
     "END_PROJECTION_EXIT_RISE_M": [3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0],
@@ -122,7 +121,6 @@ SEARCH_SPACE: Dict[str, List[float]] = {
     "MAX_TOTAL_PASSES": [4, 6, 8, 10, 12, 16, 20, 24],
     "TIE_EPS_M": [0.0, 0.3, 0.6, 0.9, 1.2, 1.8, 2.5, 4.0],
     "HARD_ACCEPT_M": [25.0, 30.0, 35.0, 40.0, 45.0, 55.0, 70.0, 90.0],
-    "MAX_INTERP_GAP_S": [0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0],
     "GAP_REAL_MIN_GAP_S": [3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0],
 }
 
@@ -134,7 +132,7 @@ SEARCH_SPACE: Dict[str, List[float]] = {
 # (±~10% della larghezza) con estensioni mirate dove aveva senso
 # (es. STATIONARY_SPEED_KMH: l'ottimo precedente era sul bordo della griglia).
 # Nota: alcuni default storici del modulo restano volutamente FUORI dal range
-# (es. START_TOL_RATIO 0.5, PROJECTION_WINDOW 0, *_EXTRA_IDX 1500,
+# (es. START_TOL_RATIO 0.5, *_EXTRA_IDX 1500,
 # TRIM_CHECK_LIMIT 1800): sono valori che disattivano le rispettive
 # funzionalità, non candidati plausibili per l'ottimo.
 PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
@@ -149,7 +147,6 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "MIN_DENSITY": (0.1, 0.9),
     "MAX_DENSITY": (1.0, 2.5),
     "MIN_LENGTH_M": (0.0, 44.0),
-    "PROJECTION_WINDOW": (0.0, 120.0),
     "END_PROJECTION_EXTRA_IDX": (20.0, 150.0),
     "END_PROJECTION_ACCEPT_M": (0.0, 90.0),
     "END_PROJECTION_EXIT_RISE_M": (0.0, 30.0),
@@ -169,8 +166,6 @@ PARAM_BOUNDS: Dict[str, Tuple[float, float]] = {
     "TIE_EPS_M": (0.0, 5.0),
     # Tetto rigido di accettazione (m) per le valli di proiezione start/end
     "HARD_ACCEPT_M": (18.0, 99.0),
-    # Soglia (s) oltre cui un buco di campionamento fa snap invece che interp.
-    "MAX_INTERP_GAP_S": (0.0, 20.0),
     # Soglia (s) di "buco vero" per lo snap al bordo piu' vicino del gate
     # (sotto soglia: interpolazione lineare storica)
     "GAP_REAL_MIN_GAP_S": (0.0, 20.0),
@@ -220,7 +215,7 @@ CRITICAL_PARAMS = [
     "MIN_LENGTH_M", "END_PROJECTION_ACCEPT_M", "END_PROJECTION_EXIT_RISE_M",
     "START_PROJECTION_ACCEPT_M", "START_PROJECTION_EXIT_RISE_M",
     "STATIONARY_SPEED_KMH", "OVERLAP_OCCUPANCY_THRESHOLD",
-    "TIE_EPS_M", "HARD_ACCEPT_M", "MAX_INTERP_GAP_S",
+    "TIE_EPS_M", "HARD_ACCEPT_M",
 ]
 
 
@@ -310,7 +305,7 @@ def load_activity_tracks() -> List[Tuple[str, Track]]:
 # ---------------------------------------------------------------------------
 # Parametri che nel codice vengono usati come interi (range/min/max/indici)
 INT_PARAMS = {
-    "MIN_MATCH_POINTS", "CLUSTER_GAP_IDX", "PROJECTION_WINDOW",
+    "MIN_MATCH_POINTS", "CLUSTER_GAP_IDX",
     "END_PROJECTION_EXTRA_IDX", "START_PROJECTION_EXTRA_IDX",
     "TRIM_REF_POINTS", "TRIM_CHECK_LIMIT", "TRIM_INDEX_GAP",
     "ANCHOR_SCAN_RANGE", "MAX_TOTAL_PASSES",

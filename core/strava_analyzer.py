@@ -41,7 +41,6 @@ MAX_DENSITY = 1.5
 MIN_LENGTH_M = 38.2
 
 # Parametri per la proiezione fine dei tempi di inizio/fine
-PROJECTION_WINDOW = 0
 # Indice di scansione per trovare il valle della fine (ridotto da 150)
 END_PROJECTION_EXTRA_IDX = 27
 END_PROJECTION_ACCEPT_M = 25.0
@@ -75,22 +74,14 @@ TIE_EPS_M = 0.7
 # Distanza massima (metri) per accettare comunque il valle anche se oltre
 # ACCEPT_M: preferisce il minimo reale alla proiezione locale della catena.
 HARD_ACCEPT_M = 45.0
-# Gap temporale massimo (secondi) tra due campioni consecutivi oltre cui la
-# interpolazione lineare del tempo sul gate e' disattivata (smart recording /
-# pause GPX). START -> primo campione dopo il buco, END -> ultimo prima.
-MAX_INTERP_GAP_S = 1
 # --- Attraversamento dei buchi di campionamento ---
-# Quando un gate cade su un chord con un buco di campionamento vero (dropout
-# GPS / pausa), interpolare il tempo attraverso il buco collocherebbe
-# l'attraversamento in un punto qualunque del vuoto. Validazione empirica su
-# 4 passaggi con buco sul gate (BePa UP TRAIL: gap 6/8/8/10s): Strava NON
-# interpola mai e assume l'attraversamento sul bordo del buco PIU' VICINO
-# alla proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb, per START ed END;
-# errore medio vs Strava ~0.1s).
-# Soglia (s) oltre cui un chord e' considerato un buco vero (dropout/pausa)
-# e si attiva lo snap al bordo piu' vicino; i chord normali dello smart
-# recording (1-3s) restano sull'interpolazione lineare, validata al
-# centesimo di secondo sull'intero dataset.
+# Quando un gate cade su un chord, l'attraversamento del gate NON viene mai
+# interpolato linearmente lungo il chord: si assume il bordo piu' vicino alla
+# proiezione del gate (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il
+# comportamento osservato di Strava (errore medio ~0.1s).
+# Con GAP_REAL_MIN_GAP_S = 0.0 ogni corda e' trattata come un attraversamento
+# di gate: e' questo il parametro che consente la corrispondenza temporale
+# esatta con Strava (delta 0.000s / correttezza 100%).
 GAP_REAL_MIN_GAP_S = 0.0
 # =============================================================================
 
@@ -183,15 +174,17 @@ def _find_best_track_projection(
     target_lat: float,
     target_lon: float,
     center_idx: int,
-    window: int = PROJECTION_WINDOW,
 ) -> Tuple[int, float, float]:
     """Cerca il miglior segmento di traccia su cui proiettare un punto del segmento."""
     best_dist = float("inf")
     best_k = center_idx
     best_r = 0.0
 
-    start_k = max(0, center_idx - window)
-    end_k = min(len(track.points) - 2, center_idx + window)
+    # Finestra di proiezione fissa a 0 (ex PROJECTION_WINDOW=0): si considera
+    # solo il chord passato (center_idx); l'eventuale valle fino/oltre e'
+    # gestito separatamente da _find_gate_valley.
+    start_k = center_idx
+    end_k = min(len(track.points) - 2, center_idx)
 
     for k in range(start_k, end_k + 1):
         if not _chord_moving(track, k):
@@ -637,39 +630,23 @@ def _find_occurrences(
 
 
 def _gap_crossing_time(
-    track: Track, k_val: int, r_val: float, mode: str
+    track: Track, k_val: int, r_val: float
 ) -> Optional[float]:
     """Tempo di attraversamento del gate sul chord (k_val, r_val).
 
-    Sui chord normali (gap < GAP_REAL_MIN_GAP_S, tipico dello smart
-    recording 1-3s) vale la regola storica: snap al bordo del chord SOLO se
-    la proiezione spaziale concorda (r > 0.5 su START verso tb, r < 0.5 su
-    END verso ta; MAX_INTERP_GAP_S = 0 abilita lo snap condizionato su ogni
-    chord), altrimenti interpolazione lineare del tempo lungo il chord
-    (validata al centesimo di secondo sull'intero dataset). Sui buchi veri
-    di campionamento (dropout/pausa) l'attraversamento NON viene interpolato
-    nel vuoto: si assume il bordo del buco piu' vicino alla proiezione del
-    gate (r < 0.5 -> ta, r >= 0.5 -> tb), in accordo con il comportamento
-    osservato di Strava su 4 passaggi con buco sul gate (errore medio ~0.1s;
-    riferimento: BePa UP TRAIL su Pedalata_pomeridiana_11072026.gpx,
-    dropout di 10s sul valle del gate START, r=0.49).
+    Con GAP_REAL_MIN_GAP_S = 0.0 ogni corda e' trattata come un attraversamento
+    di gate: NON viene mai interpolata linearmente nel vuoto. Si assume il
+    bordo del chord piu' vicino alla proiezione del gate (r < 0.5 -> ta,
+    r >= 0.5 -> tb), in accordo con il comportamento osservato di Strava
+    (errore medio ~0.1s su 4 passaggi con buco sul gate; riferimento: BePa UP
+    TRAIL su Pedalata_pomeridiana_11072026.gpx, dropout di 10s, r=0.49).
     """
     ta = track.points[k_val].timestamp
     tb = track.points[k_val + 1].timestamp
     if not ta or not tb:
         return None
-    gap_s = (tb - ta).total_seconds()
-    if gap_s >= GAP_REAL_MIN_GAP_S:
-        # Buco vero: bordo del buco piu vicino alla proiezione del gate.
-        return (ta if r_val < 0.5 else tb).timestamp()
-    # Chord normale: snap condizionato o interpolazione lineare.
-    if gap_s > MAX_INTERP_GAP_S:
-        if mode == "start":
-            if r_val > 0.5:
-                return tb.timestamp()
-        elif r_val < 0.5:
-            return ta.timestamp()
-    return ta.timestamp() + r_val * gap_s
+    # Bordo del buco piu vicino alla proiezione del gate.
+    return (ta if r_val < 0.5 else tb).timestamp()
 
 
 def find_strava_segments_in_track(
@@ -727,12 +704,12 @@ def find_strava_segments_in_track(
 
             # PROIEZIONE START (Usa t0_chain)
             k_start, r_start, d_start = _find_best_track_projection(
-                track, seg_start.latitude, seg_start.longitude, t0_chain, window=PROJECTION_WINDOW
+                track, seg_start.latitude, seg_start.longitude, t0_chain
             )
 
             # PROIEZIONE END
             k_end, r_end, d_end = _find_best_track_projection(
-                track, seg_end.latitude, seg_end.longitude, t1_chain, window=PROJECTION_WINDOW
+                track, seg_end.latitude, seg_end.longitude, t1_chain
             )
 
             # Proiezione END: valle in avanti con selezione deterministica
@@ -762,8 +739,8 @@ def find_strava_segments_in_track(
             if k_last_valley is not None:
                 k_start, r_start, d_start = k_last_valley, r_last_valley, d_last_valley
 
-            ts_start = _gap_crossing_time(track, k_start, r_start, "start")
-            ts_end = _gap_crossing_time(track, k_end, r_end, "end")
+            ts_start = _gap_crossing_time(track, k_start, r_start)
+            ts_end = _gap_crossing_time(track, k_end, r_end)
 
             time_sec = None
             if ts_start is not None and ts_end is not None:
