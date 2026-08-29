@@ -18,54 +18,309 @@ from core.track import Track, TrackPoint
 # =============================================================================
 # PARAMETRI DI CONFIGURAZIONE MATCHING SEGMENTI
 # =============================================================================
-# Soglia di vicinanza GPS per considerare un punto di traccia come candidato
+#
+# I parametri sono organizzati per CATEGORIA (natura) e per FASE della
+# pipeline di map-matching che influenzano:
+#
+#   FASE 1 - CANDIDATE   (_candidate_track_indices)
+#           Per ogni punto del segmento trova, tramite griglia spaziale, i
+#           punti di traccia entro la soglia di distanza.
+#   FASE 2 - ANCHOR      (_find_occurrences)
+#           Raggruppa i candidati dell'imbocco in cluster: ogni cluster e' un
+#           potenziale passaggio sul gate d'ingresso (anchor).
+#   FASE 3 - WALK        (_walk_forward)
+#           Camminata greedy che appare punto-segmento e punto-traccia
+#           rispettando il progresso lungo il segmento.
+#   FASE 4 - TRIM        (_trim_chain_start)
+#           Elimina loop e avvicinamenti spurii prima dell'imbocco reale.
+#   FASE 5 - VALIDAZIONE (_find_occurrences, criteri di accettazione)
+#           Copertura inizio/fine, densita' e lunghezza dell'occorrenza.
+#   FASE 6 - PROIEZIONE  (_find_best_track_projection, _find_gate_valley)
+#           Proiezione fine dei gate START/END sui chord della traccia per
+#           ricavare i tempi esatti di attraversamento.
+#   FASE 7 - SELEZIONE   (filtro finale in find_strava_segments_in_track)
+#           Risoluzione delle sovrapposizioni tra occorrenze.
+#
+# TABELLA RIASSUNTIVA PARAMETRI
+# ---------------------------------------------------------------------------
+#   FASE  : fase della pipeline influenzata (1..7, vedi sopra)
+#   SU    : effetto se il valore AUMENTA
+#   GIU   : effetto se il valore DIMINUISCE
+#   TEMPO : impatto sul tempo di completamento (+++ forte, ++ medio,
+#           + leggero, o = trascurabile); "SU tempo" = piu' lento al
+#           crescere del parametro, "GIU tempo" = piu' veloce al crescere.
+#
+# | Parametro                    | Fase | Natura      | SU aumenta ->                   | GIU diminuisce ->               | Tempo       |
+# |------------------------------|------|-------------|---------------------------------|---------------------------------|-------------|
+# | DISTANCE_THRESHOLD_M         | 1,4  | geometria   | +tolleranza GPS, + falsi pos.   | +precisione, passaggi persi     | SU tempo ++ |
+# | CLUSTER_GAP_IDX              | 2    | clustering  | cluster fusi, meno walk         | piu' cluster, + anchor          | SU tempo +  |
+# | ANCHOR_SCAN_RANGE            | 2    | clustering  | + anchor, + passaggi multipli   | 1 solo anchor per cluster       | SU tempo +  |
+# | MAX_GAP_RATIO                | 3    | copertura   | attraversa buchi GPS ampi       | catene interrotte, -recall      | SU tempo +  |
+# | PROGRESS_RATIO               | 3    | progresso   | tollera deviazioni/detours      | taglia tratti sinuosi           | SU tempo +  |
+# | PROGRESS_SLACK_M             | 3    | progresso   | idem (su tratti corti)          | idem                            | o           |
+# | TRIM_REF_POINTS              | 4    | trim        | trim imbocco piu' aggressivo    | trim piu' morbido               | o           |
+# | TRIM_CHECK_LIMIT             | 4    | trim        | copre avvicinamenti lunghi      | loop lunghi non trimmati        | o           |
+# | TRIM_INDEX_GAP               | 4    | trim        | solo salti enormi tagliano      | trim aggressivo (rischio tagli) | o           |
+# | START_TOL_RATIO              | 5    | copertura   | accetta inizi incompleti        | scarta occorrenze parziali      | o           |
+# | END_TOL_RATIO                | 5    | copertura   | accetta fini incompleti         | scarta occorrenze parziali      | o           |
+# | MIN_DENSITY                  | 5    | validazione | scarta occorrenze troncate      | accetta match parziali          | o           |
+# | MAX_DENSITY                  | 5    | validazione | accetta occorrenze con loop     | scarta occorrenze lunghe        | o           |
+# | END_PROJECTION_EXTRA_IDX     | 6    | proiezione  | valle end cercata piu' a lungo  | uscita gate meno accurata       | SU tempo +  |
+# | END_PROJECTION_ACCEPT_M      | 6    | proiezione  | accetta valley lontane          | valley scartate (fallback)      | o           |
+# | END_PROJECTION_EXIT_RISE_M   | 6    | proiezione  | scansiona piu' a lungo, robusto | esce al primo rumore (fragile)  | SU tempo +  |
+# | START_PROJECTION_EXTRA_IDX   | 6    | proiezione  | copre loop d'ingresso ampi      | start meno accurato             | SU tempo +  |
+# | START_PROJECTION_ACCEPT_M    | 6    | proiezione  | accetta valley lontane          | start resta sul chord           | o           |
+# | START_PROJECTION_EXIT_RISE_M | 6    | proiezione  | scansiona piu' a lungo, robusto | esce al primo rumore (fragile)  | SU tempo +  |
+# | STATIONARY_SPEED_KMH         | 6    | selezione   | + chord ignorati (fermi)        | jitter GPS entra nella valle    | GIU tempo + |
+# | OVERLAP_OCCUPANCY_THRESHOLD  | 7    | selezione   | ammette + overlap (doppioni)    | risultati piu' canonici         | o           |
+#
+# NOTA - costanti interne NON parametrizzate presenti nell'algoritmo:
+#   - salto max di 150 indici di traccia per punto segmento (_walk_forward)
+#   - early-exit a 10 m di distanza nel matching (_walk_forward)
+#   - finestra di proiezione fissa a 0 chord (_find_best_track_projection)
+#   - gap di 2 indici nel tie-break a mediana (_median_tie_selection)
+#
+# ---------------------------------------------------------------------------
+# CATEGORIA A - GEOMETRIA DEL MATCHING (FASE 1: generazione candidati)
+# ---------------------------------------------------------------------------
+# Natura: soglia spaziale assoluta. Influenza quali punti traccia possono
+# accoppiarsi ai punti del segmento e la qualita' geografica del matching.
+#
+# Soglia di vicinanza GPS (metri) per considerare un punto di traccia come
+# candidato. Definisce anche la cella della griglia spaziale (FASE 1) e il
+# geofence usato dal trim dell'imbocco (FASE 4).
+#   - AUMENTA: match piu' tolleranti (GPS rumoroso, campionamento rado), MA
+#     piu' falsi positivi e catene che "saltano" su strade vicine.
+#   - DIMINUISCE: matching piu' selettivo e preciso, MA rischio di perdere
+#     passaggi legittimi (recall in calo).
+#   - PERFORMANCE: parametro dominante. Celle di griglia piu' grandi => piu'
+#     punti per cella, e _walk_forward esplora piu' candidati per punto: il
+#     tempo cresce in modo marcato (quasi quadratico sul numero candidati).
 DISTANCE_THRESHOLD_M = 15.0
-# Rapporto per definire la tolleranza di inizio (in base ai punti totali)
+
+# ---------------------------------------------------------------------------
+# CATEGORIA B - TOLLERANZE DI COPERTURA DELLA CATENA (FASE 3 walk / FASE 5)
+# ---------------------------------------------------------------------------
+# Natura: rapporti (frazioni dei punti totali del segmento). Influenzano
+# quanto una catena puo' essere incompleta ai bordi o durante lo svolgimento
+# e restare comunque un'occorrenza valida.
+
+# Rapporto per definire la tolleranza di inizio: la catena puo' iniziare entro
+# i primi START_TOL_RATIO * n_seg punti del segmento.
+#   - AUMENTA: accetta imbocchi incompleti (piu' recall), MA rischia di
+#     validare match parziali/spuri.
+#   - DIMINUISCE: richiede la copertura quasi integrale dell'imbocco; i
+#     passaggi con inizio oscurato vengono scartati.
+#   - PERFORMANCE: trascurabile (solo criterio di accettazione).
 START_TOL_RATIO = 0.4
-# Rapporto per definire la tolleranza di fine (in base ai punti totali)
-END_TOL_RATIO = 0.25
-# Rapporto massimo di gap (punti segmento senza candidati) rispetto al totale
+
+# Rapporto per definire la tolleranza di fine: la catena puo' terminare entro
+# gli ultimi END_TOL_RATIO * n_seg punti del segmento.
+#   - AUMENTA: accetta fini incompleti (es. uscita dal gate mancante), MA
+#     occorrenze potenzialmente troncate.
+#   - DIMINUISCE: piu' severo sulla copertura della chiusura del segmento.
+#   - PERFORMANCE: trascurabile.
+END_TOL_RATIO = 0.4
+
+# Rapporto massimo di gap (punti segmento consecutivi senza candidati) rispetto
+# al totale, tollerato durante la camminata in avanti.
+#   - AUMENTA: la walk attraversa buchi GPS/tunnel ampi senza interrompersi
+#     (piu' recall), MA piu' rischio di accorpare passaggi distinti.
+#   - DIMINUISCE: catene interrotte piu' presto: piu' precisione, passaggi
+#     persi in caso di dropout del logger.
+#   - PERFORMANCE: al crescere la walk prosegue piu' a lungo sui buchi =>
+#     tempo leggermente superiore.
 MAX_GAP_RATIO = 0.3
-# Distanza minima tra indici di traccia per raggruppare i candidati (anchors)
+
+# ---------------------------------------------------------------------------
+# CATEGORIA C - CLUSTERING DEGLI ANCHOR (FASE 2: individuazione passaggi)
+# ---------------------------------------------------------------------------
+# Natura: distanze in INDICI di traccia. Influenzano quanti potenziali
+# passaggi (anchor) vengono generati all'imbocco e quindi quante volte viene
+# lanciata la camminata greedy.
+
+# Distanza minima tra indici di traccia per separare due cluster di candidati
+# sull'imbocco: due candidati piu' vicini di cosi' appartengono allo stesso
+# passaggio.
+#   - AUMENTA: cluster fusi => meno anchor => meno walk tentate; passaggi
+#     ravvicinati (giri sul circuito) rischiano di essere visti come uno.
+#   - DIMINUISCE: piu' cluster/anchor => piu' passaggi distinti rilevati.
+#   - PERFORMANCE: al crescere, meno walk => piu' veloce; al diminuire, piu'
+#     walk => piu' lento.
 CLUSTER_GAP_IDX = 10
 
-# Parametri per la coerenza del progresso lungo il segmento
-PROGRESS_RATIO = 2.5
-PROGRESS_SLACK_M = 50
-
-# Parametri di densita' e lunghezza per la validita' di un'occorrenza
-MIN_DENSITY = 0.5
-MAX_DENSITY = 1.5
-MIN_LENGTH_M = 0.0
-
-# Parametri per la proiezione fine dei tempi di inizio/fine
-# Indice di scansione per trovare il valle della fine (ridotto da 150)
-END_PROJECTION_EXTRA_IDX = 30
-END_PROJECTION_ACCEPT_M = 45.0
-END_PROJECTION_EXIT_RISE_M = 3.0
-
-# Parametri per la proiezione dello START (simmetrici a quelli della fine).
-# exit_rise e accept sono piu' stretti per catturare l'ingaggio nell'imbocco
-# del segmento (punto piu' PRESTO possibile) senza slittamenti temporali.
-START_PROJECTION_EXTRA_IDX = 120
-START_PROJECTION_ACCEPT_M = 45.0
-START_PROJECTION_EXIT_RISE_M = 3.0
-
-# Parametri per la gestione degli ingressi e passaggi spuri
-TRIM_REF_POINTS = 1
-TRIM_CHECK_LIMIT = 60
-TRIM_INDEX_GAP = 20
-
-# Parametri per il raggruppamento degli anchor point iniziali
+# Raggruppamento degli anchor point iniziali: dopo aver rilevato un nuovo
+# cluster, quanti candidati consecutivi aggiungere al pool di anchor da
+# tentare.
+#   - AUMENTA: piu' punti di partenza provati per cluster => piu' occorrenze
+#     multiple trovate sullo stesso gate, MA tentativi spuri in piu'.
+#   - DIMINUISCE: si tenta solo il primo candidato di ogni nuovo cluster.
+#   - PERFORMANCE: al crescere, piu' walk lanciate => piu' lento.
 ANCHOR_SCAN_RANGE = 5
 
-# Parametri algoritmi di selezione
+# ---------------------------------------------------------------------------
+# CATEGORIA D - COERENZA DEL PROGRESSO (FASE 3: camminata greedy)
+# ---------------------------------------------------------------------------
+# Natura: soglie di coerenza geometrica. Influenzano la capacita' della walk
+# di seguire il segmento anche con deviazioni, senza "scorciatoie" sulla
+# traccia.
+
+# Rapporto massimo tra distanza percorsa sulla traccia e distanza sul segmento
+# tra due accoppiamenti consecutivi: la traccia non puo' "precedere" troppo il
+# segmento.
+#   - AUMENTA: tollera deviazioni/detours anche lunghi (piu' robusto), MA la
+#     walk puo' agganciare percorsi alternativi vicini.
+#   - DIMINUISCE: taglia tratti sinuosi/detour: catene piu' corte, rischio di
+#     perdere l'occorrenza su percorsi non esatti.
+#   - PERFORMANCE: al crescere, piu' candidati superano il filtro di progresso
+#     => walk piu' lenta.
+PROGRESS_RATIO = 2.5
+
+# Slack assoluto (metri) sul progresso: tolleranza fissa sommata alla distanza
+# del segmento, fondamentale sui tratti molto corti dove il rapporto puro
+# sarebbe troppo severo.
+#   - AUMENTA: come PROGRESS_RATIO, ma pesa soprattutto sui tratti brevi.
+#   - DIMINUISCE: matching piu' rigido sui micro-tratti.
+#   - PERFORMANCE: trascurabile/modesto.
+PROGRESS_SLACK_M = 50
+
+# ---------------------------------------------------------------------------
+# CATEGORIA E - VALIDAZIONE DELL'OCCORRENZA (FASE 5: criteri di accettazione)
+# ---------------------------------------------------------------------------
+# Natura: soglie di densita' e lunghezza. Influenzano quali catene completate
+# vengono promosse a occorrenze vere e proprie.
+
+# Densita' minima: la lunghezza della catena sulla traccia deve essere almeno
+# MIN_DENSITY * lunghezza_segmento.
+#   - AUMENTA: scarta occorrenze troncate/parziali, MA puo' scartare passaggi
+#     legittimi con taglio d'imbocco aggressivo.
+#   - DIMINUISCE: accetta match parziali (piu' recall, piu' rumore).
+#   - PERFORMANCE: trascurabile (solo confronto numerico).
+MIN_DENSITY = 0.5
+
+# Densita' massima: la lunghezza della catena non puo' superare
+# MAX_DENSITY * lunghezza_segmento.
+#   - AUMENTA: accetta occorrenze con loop/agganci extra prima dell'uscita.
+#   - DIMINUISCE: scarta occorrenze "lunghe" (loop non trimmati, deviazioni).
+#   - PERFORMANCE: trascurabile.
+MAX_DENSITY = 1.5
+
+# ---------------------------------------------------------------------------
+# CATEGORIA F - PROIEZIONE FINE DEL GATE END (FASE 6: tempi di attraversamento)
+# ---------------------------------------------------------------------------
+# Natura: parametri di scansione della valle di distanza gate-traccia in
+# avanti dal centro. Influenzano l'accuratezza del tempo di FINE e quanto a
+# lungo viene scandita la traccia.
+
+# Indice di scansione per trovare la valle della fine (ridotto da 150):
+# finestra, in punti di traccia, oltre la quale la valle non viene piu'
+# cercata.
+#   - AUMENTA: l'uscita dal geofence viene individuata anche quando il rider
+#     resta vicino al gate per molti campioni; MA scansione piu' lunga.
+#   - DIMINUISCE: piu' veloce, MA rischio di fermarsi prima dell'uscita vera
+#     (tempo di fine inesatto).
+#   - PERFORMANCE: il costo e' proporzionale alla finestra => SU tempo +.
+END_PROJECTION_EXTRA_IDX = 30
+
+# Distanza massima gate-proiezione per accettare la valle trovata.
+#   - AUMENTA: accetta valley anche lontane dal gate (meno fallback).
+#   - DIMINUISCE: valley scartate => fallback sul chord della catena (tempo di
+#     fine meno raffinato).
+#   - PERFORMANCE: trascurabile.
+END_PROJECTION_ACCEPT_M = 45.0
+
+# Risalita (metri) dal minimo che chiude la valle: la scansione si ferma quando
+# la distanza risale piu' di cosi' rispetto al minimo corrente.
+#   - AUMENTA: tollera piu' jitter => la scansione copre tutta la valle e
+#     vede il vero minimo (piu' robusto), MA scandisce piu' a lungo.
+#   - DIMINUISCE: la scansione si ferma alla prima risalita di rumore,
+#     rischiando di chiudere PRIMA del vero minimo (risultato fragile).
+#   - PERFORMANCE: al crescere, SU tempo + (scansione piu' lunga).
+END_PROJECTION_EXIT_RISE_M = 3.0
+
+# ---------------------------------------------------------------------------
+# CATEGORIA G - PROIEZIONE FINE DEL GATE START (FASE 6, simmetrica alla END)
+# ---------------------------------------------------------------------------
+# Natura: identica alla categoria F ma a scansione ALL'INDIETRO. exit_rise e
+# accept sono piu' stretti per catturare l'ingaggio nell'imbocco del segmento
+# (punto piu' PRESTO possibile) senza slittamenti temporali.
+
+# Finestra di scansione all'indietro (in punti di traccia) per la valle di
+# start.
+#   - AUMENTA: copre loop d'ingresso ampi e avvicinamenti lunghi; MA scansione
+#     piu' lunga e rischio di arretrare su passaggi precedenti.
+#   - DIMINUISCE: start meno accurato se l'ingresso reale e' lontano dal
+#     primo punto della catena.
+#   - PERFORMANCE: costo proporzionale alla finestra => SU tempo +.
+START_PROJECTION_EXTRA_IDX = 120
+
+# Distanza massima gate-proiezione per accettare la valle di start.
+#   - AUMENTA: accetta valley lontane; DIMINUISCE: start resta sul chord.
+#   - PERFORMANCE: trascurabile.
+START_PROJECTION_ACCEPT_M = 45.0
+
+# Risalita che chiude la valle di start (scansione all'indietro).
+#   - AUMENTA: tollera piu' jitter => valle completa e vera (piu' robusto),
+#     MA scansione piu' lunga; DIMINUISCE: esce al primo rumore (fragile).
+#   - PERFORMANCE: al crescere, SU tempo +.
+START_PROJECTION_EXIT_RISE_M = 3.0
+
+# ---------------------------------------------------------------------------
+# CATEGORIA H - TRIM DEGLI INGRESSI SPURI (FASE 4: pulizia dell'imbocco)
+# ---------------------------------------------------------------------------
+# Natura: contatori e distanze in INDICI. Influenzano l'eliminazione di loop,
+# avvicinamenti e passaggi precedenti all'imbocco reale del segmento.
+
+# Numero di punti di riferimento interno (indicizzato nel segmento) usati per
+# punteggiare i punti d'imbocco: un punto catena e' preferito se e' vicino
+# sia allo start sia al punto di riferimento (cioe' sta entrando, non
+# uscendo).
+#   - AUMENTA: riferimento piu' interno nel segmento => trim dell'imbocco piu'
+#     aggressivo (taglia piu' avvicinamento).
+#   - DIMINUISCE: trim piu' morbido, piu' punti pre-imbocco sopravvivono.
+#   - PERFORMANCE: trascurabile.
+TRIM_REF_POINTS = 1
+
+# Quanti elementi iniziali della catena analizzare per individuare il punto di
+# imbocco vero via punteggio di vicinanza.
+#   - AUMENTA: copre avvicinamenti/loop iniziali lunghi.
+#   - DIMINUISCE: loop lunghi non vengono piu' trimmati.
+#   - PERFORMANCE: trascurabile (loop lineare su pochi elementi).
+TRIM_CHECK_LIMIT = 60
+
+# Salto di indici di traccia tra elementi consecutivi della catena che denuncia
+# una discontinuita': se il buco e' piu' grande, l'ingresso vero e' DOPO il
+# buco (il punto prima apparteneva al passaggio in salita/avvicinamento).
+#   - AUMENTA: solo salti enormi tagliano => trim piu' conservativo.
+#   - DIMINUISCE: trim aggressivo, MA rischio di tagliare inizi validi.
+#   - PERFORMANCE: trascurabile.
+TRIM_INDEX_GAP = 20
+
+# ---------------------------------------------------------------------------
+# CATEGORIA I - SELEZIONE E POST-PROCESSING (FASE 6 proiezioni / FASE 7 overlap)
+# ---------------------------------------------------------------------------
+# Natura: soglie decisionali. Influenzano quali chord partecipano alle
+# proiezioni e quali occorrenze sopravvivono al filtro finale di overlap.
+
+# Velocita' (km/h) sotto la quale il chord (k, k+1) e' considerato "fermo" e
+# viene ignorato nelle proiezioni dei gate (il rider non sta attraversando il
+# gate, e' fermo dentro il geofence).
+#   - AUMENTA: piu' chord scartati come fermi => valle calcolata solo in
+#     movimento; MA esclude anche tratti lenti reali (risalite).
+#   - DIMINUISCE: anche i chord fermi (jitter GPS a velocita' ~0) entrano
+#     nella valle => start/end potenzialmente sparpagliati.
+#   - PERFORMANCE: al crescere, GIU tempo + (meno proiezioni calcolate).
 STATIONARY_SPEED_KMH = 0.0
+
+# Quota di punti di traccia gia' occupati da altre occorrenze oltre la quale
+# un'occorrenza sovrapposta viene scartata (FASE 7).
+#   - AUMENTA: ammette piu' sovrapposizioni => piu' risultati, MA anche
+#     passaggi quasi-doppi sullo stesso tratto.
+#   - DIMINUISCE: piu' selettivo: vince solo l'occorrenza migliore per ogni
+#     tratto di traccia.
+#   - PERFORMANCE: trascurabile.
 OVERLAP_OCCUPANCY_THRESHOLD = 0.2
-
-# Numero massimo di passaggi di ricerca per direzione (avanti/indietro)
-MAX_TOTAL_PASSES = 5
-
+#
 # =============================================================================
 
 _EARTH_RADIUS_M = 6371000.0
@@ -523,10 +778,8 @@ def _find_occurrences(
     max_gap: int,
     progress_ratio: float = PROGRESS_RATIO,
     progress_slack_m: float = PROGRESS_SLACK_M,
-    min_length_m: float = MIN_LENGTH_M,
     min_density: float = MIN_DENSITY,
     max_density: float = MAX_DENSITY,
-    max_total_passes: int = MAX_TOTAL_PASSES,
 ) -> List[Tuple[bool, float, List[Tuple[int, int]]]]:
     """Trova tutte le occorrenze del segmento nella traccia.
 
@@ -541,7 +794,7 @@ def _find_occurrences(
 
     for reverse in (False, True):
         seg_pts_order = segment_track.points[::-1] if reverse else segment_track.points
-        for _ in range(max_total_passes):
+        while True:
             masked = _masked_candidates(candidates, used, reverse)
             profile = _reversed_profile(segment_profile) if reverse else segment_profile
 
@@ -559,8 +812,6 @@ def _find_occurrences(
                         for k in range(j, min(j + ANCHOR_SCAN_RANGE, len(arr))):
                             anchor_pool.append(int(arr[k]))
                     prev = x
-                #if len(arr) > 0:
-                    #anchor_pool.append(int(arr[0]))
             anchors = list(dict.fromkeys(anchor_pool))
 
             found = False
@@ -590,8 +841,6 @@ def _find_occurrences(
                 t0 = min(ti for _, ti in chain)
                 t1 = max(ti for _, ti in chain)
                 length_m = track_profile[t1] - track_profile[t0]
-                if length_m < min_length_m:
-                    continue
                 if not (min_density * seg_length <= length_m <= max_density * seg_length):
                     continue
 
@@ -665,10 +914,8 @@ def find_strava_segments_in_track(
             max_gap=max_gap,
             progress_ratio=PROGRESS_RATIO,
             progress_slack_m=PROGRESS_SLACK_M,
-            min_length_m=MIN_LENGTH_M,
             min_density=MIN_DENSITY,
             max_density=MAX_DENSITY,
-            max_total_passes=MAX_TOTAL_PASSES,
         )
 
         for reverse, avg_dist_m, chain in occurrences:
