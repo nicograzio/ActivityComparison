@@ -1061,6 +1061,59 @@ class MainWindow(QMainWindow):
         
         # Update the map with the hovered point marker
         source_panel.map.set_hovered_point(point_index)
+    def focus_on_segment(self, segment_id: int, side: str = "A") -> dict:
+        """Porta il pannello della traccia indicata sul segmento comune e lo evidenzia.
+
+        Chiamato dall'agente IA (``core.ai_agent.run_agentic_comparison``)
+        tramite lo strumento ``highlight_segment``.
+
+        Returns:
+            dict: esito dell'operazione (per il transcript dell'agente).
+        """
+        if not self._common_segments:
+            self._common_segments = self._compute_common_segments()
+        target = next(
+            (s for s in self._common_segments if s.get("id") == segment_id),
+            None,
+        )
+        if target is None:
+            return {"status": "error", "message": f"segmento {segment_id} non trovato"}
+
+        if side == "A":
+            panel = self.left_panel
+            start_m = target.get("a_start_dist_m", 0)
+            end_m = target.get("a_end_dist_m", 0)
+        else:
+            panel = self.right_panel
+            start_m = target.get("b_start_dist_m", 0)
+            end_m = target.get("b_end_dist_m", 0)
+
+        if panel.track is None or panel.range_slider is None:
+            return {
+                "status": "error",
+                "message": f"attività {side} non caricata",
+                "segment_id": segment_id,
+            }
+
+        start_m = float(start_m)
+        end_m = float(end_m)
+        panel.range_slider.setValues(int(round(start_m)), int(round(end_m)))
+        panel.visible_start_m = start_m
+        panel.visible_end_m = end_m
+        panel.update_trim(int(round(start_m)), int(round(end_m)))
+        panel.refresh_visible_track(fit_bounds=True)
+
+        if not self._highlight_enabled:
+            self._on_highlight_common_segments_toggled(True)
+
+        return {
+            "status": "ok",
+            "segment_id": segment_id,
+            "side": side,
+            "start_m": round(start_m, 1),
+            "end_m": round(end_m, 1),
+        }
+
     def _on_segment_point_selected(self, track, point_index):
         """Handle point selection from the segment detail dialog.
 
