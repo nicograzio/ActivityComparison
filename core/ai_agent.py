@@ -22,6 +22,7 @@ import numpy as np
 import requests
 
 from core.analyzer import generate_segment_coach_insights, track_distance_profile
+from core.track import activity_display_name
 
 log = logging.getLogger(__name__)
 
@@ -159,8 +160,11 @@ def build_comparison_snapshot(
         Dizionario con statistiche per traccia e per segmento, senza
         coordinate o punti ricampionati (inutili per il report testuale).
     """
-    name_a = getattr(track_a, "name", "Attività A") if track_a else "Attività A"
-    name_b = getattr(track_b, "name", "Attività B") if track_b else "Attività B"
+    # Nomi "puliti" dell'attività (stem del file, senza percorso né estensione):
+    # evitano che nel prompt IA finiscano percorsi completi come
+    # "/percorso/Pedalata_pomeridiana_20062026.gpx".
+    name_a = activity_display_name(track_a) or "Attività A"
+    name_b = activity_display_name(track_b) or "Attività B"
 
     segment_entries: List[Dict[str, Any]] = []
     for seg in segments:

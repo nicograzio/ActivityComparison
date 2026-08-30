@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from core.analyzer import calculate_point_speed, haversine_distance
+from core.track import activity_display_name
 from core.ai_agent import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -272,9 +273,11 @@ class InsightDialog(QDialog):
         self.setModal(False)
         self.resize(1100, 600)
 
+        # Mostra il nome dell'attività (stem del file, senza percorso né
+        # estensione) invece di "Activity A/B" o del percorso completo.
         self.segments = segments
-        self.name_a = name_a
-        self.name_b = name_b
+        self.name_a = activity_display_name(name_a) or name_a
+        self.name_b = activity_display_name(name_b) or name_b
         self.track_a = track_a
         self.track_b = track_b
 
@@ -701,12 +704,13 @@ class SegmentDetailDialog(QDialog):
         self.setWindowTitle(f"Dettaglio Segmento {segment.get('id', '?')}")
         self.setModal(False)
         self.resize(1000, 600)
+        # Nomi "puliti" dell'attività (senza percorso né estensione).
+        self.name_a = activity_display_name(name_a) or name_a
+        self.name_b = activity_display_name(name_b) or name_b
 
         self.segment = segment
         self.track_a = track_a
         self.track_b = track_b
-        self.name_a = name_a
-        self.name_b = name_b
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)

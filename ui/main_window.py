@@ -24,6 +24,7 @@ from ui.insight_dialog import InsightDialog
 from ui.strava_segments_dialog import StravaSegmentsDialog
 from core.analyzer import calculate_speed_series, track_distance_profile, calculate_track_series, find_common_segments
 from core.strava_analyzer import load_strava_segments, find_strava_segments_in_track
+from core.track import activity_display_name
 
 class MainWindow(QMainWindow):
     """Top-level GUI controller.
@@ -774,8 +775,8 @@ class MainWindow(QMainWindow):
         print("DEBUG MAIN WINDOW - APERTURA INSIGHT DIALOG")
         print("="*80)
         print(f"Segmenti comuni: {len(self._common_segments)}")
-        print(f"Name A: {self.left_panel.title}")
-        print(f"Name B: {self.right_panel.title}")
+        print(f"Name A: {activity_display_name(left_visible) or self.left_panel.title}")
+        print(f"Name B: {activity_display_name(right_visible) or self.right_panel.title}")
         print(f"Track A: {left_visible}")
         print(f"Track B: {right_visible}")
         if left_visible and hasattr(left_visible, 'points'):
@@ -786,8 +787,8 @@ class MainWindow(QMainWindow):
         
         dialog = InsightDialog(
             self._common_segments,
-            name_a=self.left_panel.title,
-            name_b=self.right_panel.title,
+            name_a=activity_display_name(left_visible) or self.left_panel.title,
+            name_b=activity_display_name(right_visible) or self.right_panel.title,
             track_a=left_visible,
             track_b=right_visible,
             parent=self,
@@ -910,8 +911,8 @@ class MainWindow(QMainWindow):
 
         dialog = InsightDialog(
             [segment],
-            name_a=occ1["track_name"],
-            name_b=occ2["track_name"],
+            name_a=activity_display_name(occ1.get("track")) or str(occ1.get("track_name", "")),
+            name_b=activity_display_name(occ2.get("track")) or str(occ2.get("track_name", "")),
             track_a=occ1["track"],
             track_b=occ2["track"],
             parent=self,

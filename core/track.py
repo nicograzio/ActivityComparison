@@ -5,8 +5,39 @@ proprietà vettoriali NumPy con caching lazy per velocizzare i calcoli analitici
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Any, Dict
+from pathlib import Path
+from typing import List, Optional, Any, Dict, Union
 import numpy as np
+
+
+def activity_display_name(track_or_name: Union[object, str, None]) -> str:
+    """Ricava il nome "pulito" di un'attività a partire da una traccia o da un nome.
+
+    ``Track.name`` contiene in genere il percorso completo del file sorgente
+    (es. ``/data/attivita/Pedalata_pomeridiana_20062026.gpx``). Per la UI e i
+    report conviene mostrare solo il nome dell'attività senza percorso né
+    estensione (es. ``Pedalata_pomeridiana_20062026``).
+
+    Args:
+        track_or_name: Oggetto ``Track`` (o qualsiasi oggetto con attributo
+            ``name``), una stringa con nome o percorso del file, oppure ``None``.
+
+    Returns:
+        str: Il nome dell'attività senza percorso né estensione. Se il nome
+            è vuoto o non derivabile restituisce stringa vuota.
+    """
+    if track_or_name is None:
+        return ""
+    if isinstance(track_or_name, str):
+        raw_name = track_or_name
+    else:
+        raw_name = str(getattr(track_or_name, "name", "") or "")
+    # Normalizza i separatori Windows così Path li gestisce anche su POSIX.
+    raw_name = raw_name.replace("\\", "/")
+    if not raw_name:
+        return ""
+    stem = Path(raw_name).stem
+    return stem if stem else raw_name
 
 
 @dataclass(slots=True)
