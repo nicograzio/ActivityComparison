@@ -21,7 +21,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import requests
 
-from core.analyzer import generate_segment_coach_insights, track_distance_profile
+from core.analyzer import (
+    generate_segment_coach_insights,
+    haversine_distance,
+    track_distance_profile,
+)
 from core.track import activity_display_name
 
 log = logging.getLogger(__name__)
@@ -62,7 +66,9 @@ def resolve_base_url() -> str:
 # download (GGUF Q4) e descrizione mostrata nel dialog di download.
 KNOWN_DOWNLOADABLE_MODELS: List[Dict[str, Any]] = [
     {"name": "qwen2.5:0.5b", "size_gb": 0.4,
-     "desc": "Leggero: va bene anche solo su CPU (default dell'app)."},
+     "desc": "Leggerissimo: gira ovunque ma produce report poveri e incoerenti; solo per test."},
+    {"name": "qwen2.5:3b", "size_gb": 2.0,
+     "desc": "Buon compromesso: report coerenti anche su macchine modeste (consigliato)."},
     {"name": "llama3.2:3b", "size_gb": 2.0,
      "desc": "Bilanciato tra qualità del report e risorse richieste."},
     {"name": "phi3:mini", "size_gb": 2.3,
@@ -134,18 +140,44 @@ def get_model_suggestions(installed: Optional[List[str]] = None) -> List[str]:
             ordered.append(name)
     return ordered
 
-SYSTEM_PROMPT = """Sei un coach ciclistico esperto e analista di dati sportivi.
-Confronti due attività GPS effettuate sullo stesso percorso (o con tratti comuni) e scrivi un report in LINGUA ITALIANA.
-Usa SOLO i dati forniti: non inventare numeri, tempi o sensazioni.
-Struttura il report in Markdown con queste sezioni:
-1. **Panoramica** - un paragrafo introduttivo che sintetizza il confronto.
-2. **Confronto per segmento** - per ogni segmento comune, una o due frasi con tempo, velocità ed eventuale frequenza cardiaca o pendenza.
-3. **Punti di forza** - per ciascuna attività, dove è risultata migliore dell'altra.
-4. **Aree di miglioramento** - i punti più deboli di ciascuna attività.
-5. **Consigli pratici** - da 2 a 4 suggerimenti allenanti concreti e misurabili.
+# Differenze di velocità entro questa soglia (%) si considerano parità.
+PARITY_TOLERANCE_PCT = 1.0
 
-Tono: incoraggiante, professionale, concreto. Niente prefazioni né riassunti superflui.
-Riferisciti alle attività con i loro nomi ("{name_a}" per l'attività A, "{name_b}" per l'attività B)."""
+# Guadagni/perdite di tempo entro questa soglia (s) si considerano equilibrio.
+PARITY_TIME_TOL_S = 0.2
+
+SYSTEM_PROMPT = """Sei un coach ciclistico esperto e analista di dati sportivi.
+Confronti due attività GPS sui loro SEGMENTI COMUNI e scrivi un report in LINGUA ITALIANA.
+
+REGOLE FONDAMENTALI:
+1. L'analisi riguarda SOLO i segmenti elencati in "segmenti_comuni" del JSON: per ognuno confronta
+   tempo_a_s con tempo_b_s, vel_a_kmh con vel_b_kmh e, se presenti, fc_media_a con fc_media_b.
+2. Usa i delta già calcolati ("delta_tempo_s", "delta_vel_kmh", "delta_vel_pct") e i campi
+   "vincitore" ed "esito": NON ricalcolare nulla e NON inventare numeri.
+3. I dati in "contesto_tracce" (l'intera uscita: distanza, durata totale, dislivello, meteo) servono
+   SOLO come cornice: non usarli mai per decretare un vincitore e non presentarli come dati di segmento.
+4. Se "segmenti_comuni" è vuoto, dichiaralo e fermati: non inventare segmenti né consigli.
+5. Analizza ESATTAMENTE i segmenti elencati nel messaggio utente: non inventare, non anticipare e
+   non menzionare MAI segmenti che non compaiono in quell'elenco. Se l'elenco contiene un solo
+   segmento, il report ha una sola voce di confronto.
+6. Usa i nomi reali delle attività: "{name_a}" è l'attività A (campi *_a), "{name_b}" è l'attività B (campi *_b).
+
+Significato dei campi: tempo_*_s = tempo sul segmento in secondi; vel_*_kmh = velocità media in km/h;
+fc_media_* = frequenza cardiaca media in bpm; pendenza_*_pct = pendenza media in PERCENTO;
+dislivello_positivo_m = metri di salita; lunghezza_m = lunghezza del tratto in metri;
+km_a / km_b = chilometraggio di inizio del tratto lungo ciascuna traccia.
+
+Struttura del report in Markdown (3 sezioni, nessuna prefazione né riassunto finale):
+1. **Confronto per segmento** - per ogni segmento, una riga di riepilogo (chi è stato più veloce,
+   tempo, differenza in secondi e percentuale, eventuale FC e pendenza) seguita da un sotto-punto
+   "**Andamento**" che descrive i tratti di guadagno/perdita di tempo usando SOLO i dati del campo
+   "andamento" (es. "da km 0,0 a 0,4 l'attività A guadagna 2,1 s"), e una breve lettura tecnica
+   collegata a pendenza o FC. Se "andamento" è null, ometti il sotto-punto.
+2. **Sintesi** - 2-3 frasi: su quali tratti ha vinto l'attività A, su quali la B, quale tendenza emerge.
+3. **Consigli pratici** - 2-4 suggerimenti concreti e misurabili, derivati SOLO dai dati dei segmenti
+   (puoi riferirti al punto del tratto dove si è perso tempo).
+
+Tono: incoraggiante, professionale, concreto."""
 
 
 class OllamaUnavailableError(RuntimeError):
@@ -185,6 +217,143 @@ def _isoformat(timestamp: Any) -> Optional[str]:
         except Exception:  # noqa: BLE001
             return str(timestamp)
     return str(timestamp)
+
+
+def _format_duration(seconds: Optional[float]) -> Optional[str]:
+    """Formatta una durata in secondi come stringa leggibile (H:MM:SS o M:SS)."""
+    if seconds is None:
+        return None
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return None
+    hours, remainder = divmod(max(total, 0), 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _split_count(length_m: Optional[float]) -> int:
+    """Numero di frazioni in cui dividere un segmento per l'analisi d'andamento."""
+    if length_m is None:
+        return 4
+    if length_m >= 3000:
+        return 8
+    if length_m >= 1000:
+        return 6
+    return 4
+
+
+def _side_split_times(
+    track, seg: Dict[str, Any], side: str, n_splits: int
+) -> Optional[List[float]]:
+    """Tempi cumulativi (secondi) ai confini delle frazioni del segmento.
+
+    Usa l'intervallo di indici della traccia (``a_start_idx``/``a_end_idx`` o
+    l'equivalente per B) quando disponibile, altrimenti i punti ricampionati
+    del segmento. Restituisce una lista di ``n_splits + 1`` tempi (indice 0 =
+    partenza, ultimo = arrivo) oppure ``None`` se i timestamp non bastano.
+    """
+    if track is None:
+        return None
+    side_lower = side.lower()
+    start_idx = seg.get(f"{side_lower}_start_idx")
+    end_idx = seg.get(f"{side_lower}_end_idx")
+    points = getattr(track, "points", None) or []
+    if start_idx is not None and end_idx is not None:
+        points = points[int(start_idx):int(end_idx) + 1]
+    else:
+        points = list(seg.get(f"resampled_points_{side_lower}") or [])
+    if len(points) < 2:
+        return None
+
+    stamps = [p.timestamp for p in points]
+    if stamps[0] is None or stamps[-1] is None:
+        return None
+    try:
+        t0 = stamps[0]
+        last_t = 0.0
+        elapsed: List[float] = []
+        for ts in stamps:
+            if ts is not None:
+                last_t = (ts - t0).total_seconds()
+            elapsed.append(last_t)
+    except TypeError:
+        return None
+
+    cum = [0.0]
+    for prev, cur in zip(points, points[1:]):
+        cum.append(cum[-1] + haversine_distance(prev, cur))
+    if cum[-1] <= 0:
+        return None
+
+    times = [0.0]
+    j = 0
+    eps = cum[-1] * 1e-9 + 1e-9  # tolleranza: confini esatti non devono slittare
+    for k in range(1, n_splits + 1):
+        target = cum[-1] * k / n_splits
+        while j < len(cum) and cum[j] < target - eps:
+            j += 1
+        if j >= len(cum):
+            j = len(cum) - 1
+        times.append(elapsed[j])
+    return times
+
+
+def _segment_progress(
+    track_a, track_b, seg: Dict[str, Any], n_splits: int
+) -> Optional[List[Dict[str, Any]]]:
+    """Analisi deterministica di dove si guadagna/perde tempo nel segmento.
+
+    Divide il tratto in ``n_splits`` frazioni di distanza uguali e calcola, per
+    ogni frazione, il guadagno di tempo di un'attività sull'altra dai timestamp.
+    Le frazioni consecutive con lo stesso leader vengono fuse in tratti.
+
+    Returns:
+        Lista di tratti ``{"da_km", "a_km", "chi", "guadagno_s", "frase"}``
+        (``guadagno_s`` positivo = l'attività A guadagna tempo su B), o
+        ``None`` se i timestamp non sono sufficienti.
+    """
+    times_a = _side_split_times(track_a, seg, "A", n_splits)
+    times_b = _side_split_times(track_b, seg, "B", n_splits)
+    if times_a is None or times_b is None:
+        return None
+
+    length_m = seg.get("length_m") or 0
+    if length_m <= 0:
+        return None
+
+    stretches: List[Dict[str, Any]] = []
+    for k in range(1, n_splits + 1):
+        # Positivo => in questa frazione A impiega meno tempo di B (A guadagna).
+        gain = (times_b[k] - times_b[k - 1]) - (times_a[k] - times_a[k - 1])
+        chi = "pari" if abs(gain) <= PARITY_TIME_TOL_S else ("A" if gain > 0 else "B")
+        km_start = (k - 1) * length_m / n_splits / 1000.0
+        km_end = k * length_m / n_splits / 1000.0
+        if stretches and stretches[-1]["chi"] == chi:
+            stretches[-1]["a_km"] = _rounded(km_end)
+            stretches[-1]["guadagno_s"] = _rounded(
+                (stretches[-1]["guadagno_s"] or 0.0) + gain
+            )
+        else:
+            stretches.append({
+                "da_km": _rounded(km_start),
+                "a_km": _rounded(km_end),
+                "chi": chi,
+                "guadagno_s": _rounded(gain),
+            })
+
+    for st in stretches:
+        gain = st["guadagno_s"] or 0.0
+        where = f"da {st['da_km']} a {st['a_km']} km"
+        if st["chi"] == "pari":
+            st["frase"] = f"{where}: tratto in equilibrio ({abs(gain)} s di scarto)."
+        elif st["chi"] == "A":
+            st["frase"] = f"{where}: l'attività A guadagna {abs(gain)} s sull'attività B."
+        else:
+            st["frase"] = f"{where}: l'attività B guadagna {abs(gain)} s sull'attività A."
+    return stretches
 
 
 def _track_summary(track, name: str) -> Dict[str, Any]:
@@ -243,14 +412,20 @@ def build_comparison_snapshot(
 ) -> Dict[str, Any]:
     """Costruisce lo snapshot JSON-safe e compatto per il report IA.
 
+    Lo snapshot è centrato sui SEGMENTI COMUNI (l'oggetto reale dell'analisi):
+    per ogni segmento sono inclusi i delta già calcolati, un vincitore e una
+    frase di esito pronta. Le statistiche delle tracce intere sono incluse
+    solo come contesto, sotto ``contesto_tracce``, per non fuorviare il modello.
+
     Args:
         track_a: Prima traccia (attività A).
         track_b: Seconda traccia (attività B).
         segments: Segmenti comuni prodotti da ``core.analyzer.find_common_segments``.
 
     Returns:
-        Dizionario con statistiche per traccia e per segmento, senza
-        coordinate o punti ricampionati (inutili per il report testuale).
+        Dizionario con i segmenti comuni per primi (chiave ``segmenti_comuni``)
+        e le statistiche delle tracce intere come contesto, senza coordinate
+        o punti ricampionati (inutili per il report testuale).
     """
     # Nomi "puliti" dell'attività (stem del file, senza percorso né estensione):
     # evitano che nel prompt IA finiscano percorsi completi come
@@ -276,18 +451,64 @@ def build_comparison_snapshot(
             if spd_a:
                 delta_v_pct = _rounded((spd_b - spd_a) / spd_a * 100.0)
 
+        # Esito pre-calcolato: diff_pct positivo => A più veloce di B.
+        diff_pct: Optional[float] = None
+        if spd_a and spd_b:
+            diff_pct = _rounded((spd_a - spd_b) / spd_b * 100.0)
+        elif time_a and time_b:
+            diff_pct = _rounded((time_b - time_a) / time_b * 100.0)
+        if diff_pct is None:
+            vincitore: Optional[str] = None
+        elif abs(diff_pct) <= PARITY_TOLERANCE_PCT:
+            vincitore = "pari"
+        else:
+            vincitore = "A" if diff_pct > 0 else "B"
+
+        esito: Optional[str] = None
+        if vincitore == "pari":
+            esito = "Tratto in parità: le due attività completano il segmento in tempi equivalenti."
+        elif vincitore in ("A", "B"):
+            # "A"/"B" escono solo dal ramo `else` del calcolo del vincitore,
+            # dove diff_pct è stato verificato non-None: qui è sempre un float.
+            assert diff_pct is not None
+            win_time = _format_duration(time_a if vincitore == "A" else time_b)
+            lose_time = _format_duration(time_b if vincitore == "A" else time_a)
+            advantage = abs(diff_pct)
+            if win_time and lose_time:
+                esito = (
+                    f"L'attività {vincitore} completa il tratto in {win_time} "
+                    f"contro {lose_time}, circa {advantage}% più veloce."
+                )
+            else:
+                esito = (
+                    f"L'attività {vincitore} è risultata circa {advantage}% "
+                    "più veloce su questo tratto."
+                )
+
         segment_entries.append({
             "id": seg.get("id"),
+            "nome": (
+                seg.get("id")
+                if isinstance(seg.get("id"), str)
+                else f"Segmento {seg.get('id')}"
+            ),
             "km_a": _rounded((seg.get("a_start_dist_m") or 0) / 1000.0),
             "km_b": _rounded((seg.get("b_start_dist_m") or 0) / 1000.0),
             "lunghezza_m": _rounded(seg.get("length_m")),
             "tempo_a_s": _rounded(time_a),
             "tempo_b_s": _rounded(time_b),
+            "tempo_a_leggibile": _format_duration(time_a),
+            "tempo_b_leggibile": _format_duration(time_b),
             "delta_tempo_s": delta_t,
             "vel_a_kmh": _rounded(spd_a),
             "vel_b_kmh": _rounded(spd_b),
             "delta_vel_kmh": delta_v,
             "delta_vel_pct": delta_v_pct,
+            "vincitore": vincitore,
+            "esito": esito,
+            "andamento": _segment_progress(
+                track_a, track_b, seg, _split_count(seg.get("length_m"))
+            ),
             "pendenza_a_pct": _rounded(seg.get("slope_a")),
             "pendenza_b_pct": _rounded(seg.get("slope_b")),
             "fc_media_a": _rounded(seg.get("avg_hr_a")),
@@ -296,28 +517,77 @@ def build_comparison_snapshot(
             "alt_media_b_m": _rounded(seg.get("avg_alt_b")),
         })
 
-    return {
-        "tipo": "confronto_attivita",
-        "versione": 1,
-        "attivita_a": _track_summary(track_a, name_a),
-        "attivita_b": _track_summary(track_b, name_b),
+    snapshot: Dict[str, Any] = {
+        "tipo": "confronto_segmenti_comuni",
+        "versione": 2,
         "segmenti_comuni": segment_entries,
+        "contesto_tracce": {
+            "nota": (
+                "Statistiche dell'intera uscita per ciascuna attività: usale "
+                "solo come contesto, NON per il giudizio sui segmenti."
+            ),
+            "attivita_a": _track_summary(track_a, name_a),
+            "attivita_b": _track_summary(track_b, name_b),
+        },
     }
+    if name_a == name_b:
+        snapshot["nota_stessa_traccia"] = (
+            f"I campi *_a e *_b provengono dalla stessa traccia (\"{name_a}\"): "
+            "rappresentano occorrenze (passaggi) diverse sullo stesso percorso."
+        )
+    return snapshot
 
 
 def _build_user_prompt(snapshot: Dict[str, Any], name_a: str, name_b: str) -> str:
     """Serializza lo snapshot nel messaggio utente del prompt."""
     data = dict(snapshot)
-    for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
-        if isinstance(data.get(key), dict):
-            data[key] = dict(data[key])
-            data[key]["nome_visualizzato"] = display_name
+    context = data.get("contesto_tracce")
+    if isinstance(context, dict):
+        context = dict(context)
+        for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
+            if isinstance(context.get(key), dict):
+                context[key] = dict(context[key])
+                context[key]["nome_visualizzato"] = display_name
+        data["contesto_tracce"] = context
+    else:
+        # Compatibilità con snapshot legacy (chiavi attivita_a/attivita_b in cima).
+        for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
+            if isinstance(data.get(key), dict):
+                data[key] = dict(data[key])
+                data[key]["nome_visualizzato"] = display_name
 
     body = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+    entries = data.get("segmenti_comuni") or []
+    if entries:
+        labels: List[str] = []
+        for i, e in enumerate(entries, start=1):
+            nome = e.get("nome") or f"Segmento {e.get('id', i)}"
+            labels.append(f"- {nome} ({_rounded(e.get('lunghezza_m')) or '?'} m)")
+        listing = "\n".join(labels)
+        count = len(entries)
+        plural = "i" if count != 1 else "o"
+        seg_list = (
+            f"I segmenti da analizzare son{plural} ESATTAMENTE quest{'i' if count != 1 else 'o'} "
+            f"{count} (non aggiungerne altri):\n{listing}"
+        )
+    else:
+        seg_list = "Non ci sono segmenti comuni da analizzare."
+
     return (
-        "Ecco i dati di confronto tra le due attività:\n\n"
-        f"```json\n{body}\n```\n\n"
-        "Scrivi il report di allenamento richiesto dal ruolo di sistema."
+        f"Confronta i SEGMENTI COMUNI tra \"{name_a}\" (attività A) e \"{name_b}\" (attività B).\n\n"
+        f"{seg_list}\n\n"
+        "Istruzioni:\n"
+        "- Analizza SOLO i segmenti nell'array \"segmenti_comuni\": una voce di report per ciascuno; "
+        "non menzionare MAI segmenti che non sono in questo elenco.\n"
+        "- Per ogni segmento confronta i campi *_a con i corrispondenti *_b e usa i delta già "
+        "calcolati (delta_tempo_s, delta_vel_kmh, delta_vel_pct), i campi \"vincitore\" ed \"esito\": "
+        "non ricalcolare e non inventare numeri.\n"
+        "- Descrivi dove si guadagna/perde tempo usando SOLO il campo \"andamento\" (tratti con "
+        "frasi già pronte); se \"andamento\" è null, ometti quella parte.\n"
+        "- Ignora \"contesto_tracce\" per il giudizio: contiene solo le statistiche dell'intera uscita.\n\n"
+        f"Dati di confronto:\n\n```json\n{body}\n```\n\n"
+        "Ora scrivi il report richiesto dal ruolo di sistema."
     )
 
 
@@ -337,7 +607,14 @@ def _post_chat(
         "model": model,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.4, "num_ctx": 8192},
+        # temperature bassa: report fattuale, meno divagazioni; repeat_penalty
+        # contrasta la ripetizione ossessiva tipica dei modelli molto piccoli.
+        "options": {
+            "temperature": 0.1,
+            "num_ctx": 8192,
+            "num_predict": 1024,
+            "repeat_penalty": 1.1,
+        },
     }
     if tools:
         payload["tools"] = tools
@@ -408,8 +685,18 @@ Regole:
 - Scrivi sempre in LINGUA ITALIANA.
 - Non inventare numeri: usa esclusivamente i dati ottenuti dagli strumenti o forniti nel messaggio utente.
 - Gli strumenti restituiscono JSON. Chiamali quando utile e analizzane il contenuto.
+- L'oggetto dell'analisi sono i SEGMENTI COMUNI (array "segmenti_comuni"): per ciascuno confronta i
+  campi *_a con i corrispondenti *_b e usa i delta già calcolati ("delta_tempo_s", "delta_vel_kmh",
+  "delta_vel_pct") e i campi "vincitore" ed "esito", senza ricalcolare nulla.
+- Le statistiche in "contesto_tracce" descrivono l'intera uscita: usale solo come contesto, MAI per
+  decretare un vincitore o come se fossero dati di segmento.
+- Se "segmenti_comuni" è vuoto, dichiaralo e non inventare segmenti né consigli.
+- Analizza ESATTAMENTE i segmenti presenti in "segmenti_comuni": non menzionare mai segmenti assenti.
+- Per ogni segmento descrivi anche l'andamento usando SOLO il campo "andamento" (tratti in cui un'
+  attività guadagna/perde tempo); se "andamento" è null, ometti quella parte.
 - Quando hai le informazioni necessarie, scrivi il report finale in Markdown con le sezioni:
-  **Panoramica**, **Confronto per segmenti**, **Punti di forza**, **Aree di miglioramento**, **Consigli pratici**.
+  **Confronto per segmenti** (una voce per segmento, con riga di riepilogo e sotto-punto Andamento),
+  **Sintesi**, **Consigli pratici**.
 - Per evidenziare un segmento sulla mappa dell'app usa lo strumento highlight_segment.
 - Termina il lavoro con il solo testo del report, SENZA chiamare altri strumenti.
 
@@ -528,15 +815,26 @@ MAX_AGENT_ITERATIONS = 6
 def _build_agent_user_prompt(snapshot: Dict[str, Any], name_a: str, name_b: str) -> str:
     """Prompt utente per l'agente: contesto iniziale + invito a usare gli strumenti."""
     data = dict(snapshot)
-    for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
-        if isinstance(data.get(key), dict):
-            data[key] = dict(data[key])
-            data[key]["nome_visualizzato"] = display_name
+    context = data.get("contesto_tracce")
+    if isinstance(context, dict):
+        context = dict(context)
+        for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
+            if isinstance(context.get(key), dict):
+                context[key] = dict(context[key])
+                context[key]["nome_visualizzato"] = display_name
+        data["contesto_tracce"] = context
+    else:
+        # Compatibilità con snapshot legacy (chiavi attivita_a/attivita_b in cima).
+        for key, display_name in (("attivita_a", name_a), ("attivita_b", name_b)):
+            if isinstance(data.get(key), dict):
+                data[key] = dict(data[key])
+                data[key]["nome_visualizzato"] = display_name
     body = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     return (
-        f"Confronta le due attività \"{name_a}\" (attività A) e \"{name_b}\" (attività B).\n"
-        "Hai a disposizione degli strumenti per approfondire i dati.\n"
-        "Dati iniziali di confronto:\n"
+        f"Confronta i SEGMENTI COMUNI tra \"{name_a}\" (attività A) e \"{name_b}\" (attività B).\n"
+        "Hai a disposizione degli strumenti per approfondire i dati dei segmenti.\n"
+        "I dati iniziali di confronto hanno i segmenti comuni in \"segmenti_comuni\"; "
+        "\"contesto_tracce\" contiene solo le statistiche dell'intera uscita (non usare per il giudizio):\n"
         f"```json\n{body}\n```"
     )
 

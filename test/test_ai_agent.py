@@ -28,6 +28,7 @@ from core.ai_agent import (  # noqa: E402
     generate_offline_fallback_report,
     list_local_models,
     run_agentic_comparison,
+    _build_user_prompt,
 )
 
 
@@ -52,6 +53,36 @@ def _build_synthetic_tracks():
     return build(0.000000, 0), build(0.000020, 5)
 
 
+def _build_progress_tracks():
+    """Due tracce identiche geometricamente: A veloce nella prima metà, lenta nella seconda.
+
+    13 punti (12 intervalli): A percorre i primi 6 intervalli in 1 s ciascuno e
+    gli ultimi 6 in 5 s; B in modo uniforme (3 s per intervallo). A guadagna
+    tempo nella prima parte del tratto e lo perde nella seconda.
+    """
+    from datetime import datetime, timedelta
+
+    base = datetime(2024, 1, 1, 8, 0, 0)
+    n = 13
+    track_a = Track("prog_a")
+    track_b = Track("prog_b")
+    t_a = 0.0
+    t_b = 0.0
+    for i in range(n):
+        track_a.points.append(
+            TrackPoint(latitude=45.0, longitude=9.0 + i * 1e-4, altitude=100.0,
+                       timestamp=base + timedelta(seconds=t_a))
+        )
+        track_b.points.append(
+            TrackPoint(latitude=45.0, longitude=9.0 + i * 1e-4, altitude=100.0,
+                       timestamp=base + timedelta(seconds=t_b))
+        )
+        if i < n - 1:
+            t_a += 1.0 if i < 6 else 5.0
+            t_b += 3.0
+    return track_a, track_b
+
+
 class TestComparisonSnapshot(unittest.TestCase):
     def setUp(self):
         self.track_a, self.track_b = _build_synthetic_tracks()
@@ -68,19 +99,138 @@ class TestComparisonSnapshot(unittest.TestCase):
         self.assertEqual(snap1, snap2)
         json.dumps(snap1, ensure_ascii=False)  # non deve sollevare
 
-        self.assertIn("attivita_a", snap1)
-        self.assertIn("attivita_b", snap1)
+        self.assertIn("contesto_tracce", snap1)
+        self.assertIn("attivita_a", snap1["contesto_tracce"])
+        self.assertIn("attivita_b", snap1["contesto_tracce"])
         self.assertEqual(len(snap1["segmenti_comuni"]), len(self.segments))
+        # I segmenti comuni devono venire PRIMA del contesto delle tracce:
+        # i modelli piccoli danno più peso all'inizio del JSON.
+        self.assertEqual(
+            list(snap1.keys()), ["tipo", "versione", "segmenti_comuni", "contesto_tracce"]
+        )
 
     def test_snapshot_metrics(self):
         snap = build_comparison_snapshot(self.track_a, self.track_b, self.segments)
-        a = snap["attivita_a"]
+        a = snap["contesto_tracce"]["attivita_a"]
         self.assertGreater(a["dist_km"], 0)
         self.assertIsNotNone(a["durata_s"])
         self.assertIsNotNone(a["vel_media_kmh"])
         first = snap["segmenti_comuni"][0]
         self.assertIn("vel_a_kmh", first)
         self.assertIn("delta_tempo_s", first)
+        self.assertIn("vincitore", first)
+        self.assertIn("esito", first)
+        self.assertIn("tempo_a_leggibile", first)
+
+    def test_snapshot_winner_and_readable_times(self):
+        segs = [{
+            "id": 1,
+            "length_m": 800.0,
+            "a_start_dist_m": 0.0,
+            "b_start_dist_m": 0.0,
+            "time_a_sec": 190.0,
+            "time_b_sec": 175.0,
+            "avg_speed_a": 15.0,
+            "avg_speed_b": 16.36,
+            "slope_a": 1.0,
+            "slope_b": 1.0,
+            "avg_hr_a": 140.0,
+            "avg_hr_b": 145.0,
+        }]
+        snap = build_comparison_snapshot(self.track_a, self.track_b, segs)
+        entry = snap["segmenti_comuni"][0]
+        self.assertEqual(entry["vincitore"], "B")
+        self.assertEqual(entry["tempo_a_leggibile"], "3:10")
+        self.assertEqual(entry["tempo_b_leggibile"], "2:55")
+        self.assertIsNotNone(entry["esito"])
+        self.assertIn("B", entry["esito"])
+
+    def test_snapshot_parity(self):
+        segs = [{
+            "id": 1,
+            "length_m": 500.0,
+            "a_start_dist_m": 0.0,
+            "b_start_dist_m": 0.0,
+            "time_a_sec": 180.0,
+            "time_b_sec": 180.5,
+            "avg_speed_a": 10.0,
+            "avg_speed_b": 10.0,
+        }]
+        snap = build_comparison_snapshot(self.track_a, self.track_b, segs)
+        entry = snap["segmenti_comuni"][0]
+        self.assertEqual(entry["vincitore"], "pari")
+        self.assertIn("parità", entry["esito"])
+
+    def test_snapshot_progress_profile(self):
+        track_a, track_b = _build_progress_tracks()
+        seg = {
+            "id": 1,
+            "a_start_idx": 0,
+            "a_end_idx": 12,
+            "b_start_idx": 0,
+            "b_end_idx": 12,
+            "a_start_dist_m": 0.0,
+            "a_end_dist_m": 86.0,
+            "b_start_dist_m": 0.0,
+            "b_end_dist_m": 86.0,
+            "length_m": 86.0,
+            "time_a_sec": 36.0,
+            "time_b_sec": 36.0,
+            "avg_speed_a": 8.6,
+            "avg_speed_b": 8.6,
+        }
+        snap = build_comparison_snapshot(track_a, track_b, [seg])
+        prog = snap["segmenti_comuni"][0]["andamento"]
+        self.assertIsNotNone(prog)
+        # A guadagna nella prima parte, B nella seconda: due tratti fusi.
+        self.assertEqual([st["chi"] for st in prog], ["A", "B"])
+        self.assertAlmostEqual(prog[0]["guadagno_s"], 12.0, delta=1.5)
+        self.assertAlmostEqual(prog[1]["guadagno_s"], -12.0, delta=1.5)
+        self.assertAlmostEqual(
+            sum(st["guadagno_s"] for st in prog), 0.0, delta=0.5
+        )
+        self.assertIn("A guadagna", prog[0]["frase"])
+        self.assertIn("B guadagna", prog[1]["frase"])
+
+    def test_snapshot_progress_without_timestamps(self):
+        track_a, track_b = _build_progress_tracks()
+        for track in (track_a, track_b):
+            for p in track.points:
+                p.timestamp = None
+        seg = {
+            "id": 1,
+            "a_start_idx": 0,
+            "a_end_idx": 12,
+            "b_start_idx": 0,
+            "b_end_idx": 12,
+            "length_m": 86.0,
+        }
+        snap = build_comparison_snapshot(track_a, track_b, [seg])
+        self.assertIsNone(snap["segmenti_comuni"][0]["andamento"])
+
+    def test_user_prompt_lists_segments_exactly(self):
+        track_a, track_b = _build_progress_tracks()
+        seg = {
+            "id": "MoneLLine",
+            "a_start_idx": 0,
+            "a_end_idx": 12,
+            "b_start_idx": 0,
+            "b_end_idx": 12,
+            "length_m": 86.0,
+            "time_a_sec": 36.0,
+            "time_b_sec": 36.0,
+            "avg_speed_a": 8.6,
+            "avg_speed_b": 8.6,
+        }
+        snap = build_comparison_snapshot(track_a, track_b, [seg])
+        entry = snap["segmenti_comuni"][0]
+        self.assertEqual(entry["nome"], "MoneLLine")
+        prompt = _build_user_prompt(snap, "strava_full", "strava_full")
+        self.assertIn("ESATTAMENTE", prompt)
+        self.assertIn("MoneLLine", prompt)
+        self.assertIn("andamento", prompt)
+        # Un solo segmento: il prompt deve dire "questo 1" e vietarne altri.
+        self.assertIn("1 (non aggiungerne altri)", prompt)
 
     def test_snapshot_empty_segments(self):
         snap = build_comparison_snapshot(self.track_a, self.track_b, [])
