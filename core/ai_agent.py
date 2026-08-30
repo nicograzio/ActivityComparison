@@ -32,15 +32,107 @@ DEFAULT_MODEL = os.environ.get("DUOTRACK_OLLAMA_MODEL", "qwen2.5:0.5b")
 OLLAMA_CHAT_ENDPOINT = "/api/chat"
 OLLAMA_TAGS_ENDPOINT = "/api/tags"
 
+
+def resolve_base_url() -> str:
+    """Base URL del server Ollama da usare per le richieste.
+
+    Ordine:
+        1. base URL del motore embedded (``core.ollama_embedded``) se attivo;
+        2. fallback storico: ``DUOTRACK_OLLAMA_URL`` oppure ``localhost:11434``.
+
+    Così l'app funziona sia con il motore avviato automaticamente sia con
+    un'installazione Ollama gestita dall'utente.
+    """
+    try:
+        from core.ollama_embedded import default_base_url, get_ollama_manager
+    except Exception:  # noqa: BLE001 - mai bloccare l'app per il motore IA
+        log.debug("Motore Ollama embedded non disponibile", exc_info=True)
+    else:
+        try:
+            url = get_ollama_manager().base_url
+            if url:
+                return url.rstrip("/")
+        except Exception:  # noqa: BLE001 - mai bloccare l'app per il motore IA
+            log.debug("Base URL del motore embedded non ottenibile", exc_info=True)
+        return default_base_url()
+    return DEFAULT_BASE_URL
+
+
+# Catalogo dei modelli noti scaricabili: nome, dimensione indicativa del
+# download (GGUF Q4) e descrizione mostrata nel dialog di download.
+KNOWN_DOWNLOADABLE_MODELS: List[Dict[str, Any]] = [
+    {"name": "qwen2.5:0.5b", "size_gb": 0.4,
+     "desc": "Leggero: va bene anche solo su CPU (default dell'app)."},
+    {"name": "llama3.2:3b", "size_gb": 2.0,
+     "desc": "Bilanciato tra qualità del report e risorse richieste."},
+    {"name": "phi3:mini", "size_gb": 2.3,
+     "desc": "Leggero, con buone capacità di ragionamento."},
+    {"name": "mistral:7b", "size_gb": 4.4,
+     "desc": "Migliore qualità, richiede circa 8 GB di RAM."},
+    {"name": "llama3.1:8b", "size_gb": 4.9,
+     "desc": "Ottima qualità, richiede circa 8 GB di RAM."},
+    {"name": "gemma2:9b", "size_gb": 5.4,
+     "desc": "Ottima qualità, richiede circa 10 GB di RAM."},
+]
+
 # Modelli noti mostrati come suggerimenti nella UI (la combo è editabile).
-KNOWN_LOCAL_MODELS: List[str] = [
+KNOWN_LOCAL_MODELS: List[str] = [m["name"] for m in KNOWN_DOWNLOADABLE_MODELS]
+
+# Formato accettato per i nomi dei modelli Ollama: "nome" oppure "nome:tag",
+# con lettere, cifre, punto, underscore e trattino (es. "qwen2.5:0.5b",
+# "deepseek-r1:1.5b", "llama3.2" — senza tag viene usato :latest).
+MODEL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+(:[a-zA-Z0-9._-]+)?$")
+
+
+def is_valid_model_name(name: str) -> bool:
+    """True se ``name`` ha il formato di un modello Ollama valido."""
+    if not name:
+        return False
+    return bool(MODEL_NAME_PATTERN.match(name.strip()))
+
+
+# Nomi popolari suggeriti dall'autocompletamento durante la digitazione:
+# catalogo scaricabile + altre taglie/famiglie note su ollama.com.
+KNOWN_MODEL_SUGGESTIONS: List[str] = [
     "qwen2.5:0.5b",
+    "qwen2.5:1.5b",
+    "qwen2.5:3b",
+    "qwen2.5:7b",
+    "qwen2.5:14b",
+    "llama3.2:1b",
     "llama3.2:3b",
     "llama3.1:8b",
-    "mistral:7b",
+    "gemma2:2b",
     "gemma2:9b",
+    "mistral:7b",
     "phi3:mini",
+    "phi4:mini",
+    "deepseek-r1:1.5b",
+    "deepseek-r1:7b",
+    "deepseek-r1:8b",
 ]
+
+
+def get_model_suggestions(installed: Optional[List[str]] = None) -> List[str]:
+    """Suggerimenti per l'autocompletamento dei nomi modello.
+
+    Unione senza duplicati (e senza nomi malformati) di: catalogo
+    scaricabile, lista statica di suggerimenti popolari e modelli
+    realmente installati passati dall'utente.
+
+    Args:
+        installed: nomi dei modelli installati sul motore, se noti.
+    """
+    candidates: List[str] = [m["name"] for m in KNOWN_DOWNLOADABLE_MODELS]
+    candidates += KNOWN_MODEL_SUGGESTIONS
+    candidates += list(installed or [])
+    seen = set()
+    ordered: List[str] = []
+    for name in candidates:
+        if name and name not in seen and is_valid_model_name(name):
+            seen.add(name)
+            ordered.append(name)
+    return ordered
 
 SYSTEM_PROMPT = """Sei un coach ciclistico esperto e analista di dati sportivi.
 Confronti due attività GPS effettuate sullo stesso percorso (o con tratti comuni) e scrivi un report in LINGUA ITALIANA.
@@ -296,7 +388,7 @@ def generate_ai_comparison(
     Raises:
         OllamaUnavailableError: se Ollama non è raggiungibile o risponde male.
     """
-    base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+    base_url = (base_url or resolve_base_url()).rstrip("/")
     model = model or DEFAULT_MODEL
 
     messages = [
@@ -470,7 +562,7 @@ def run_agentic_comparison(
         (report_finale, transcript) dove transcript è l'elenco delle chiamate
         effettuate (nome, argomenti, risultato) per trasparenza.
     """
-    base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+    base_url = (base_url or resolve_base_url()).rstrip("/")
     model = model or DEFAULT_MODEL
 
     messages: List[Dict[str, Any]] = [
@@ -544,7 +636,7 @@ def run_agentic_comparison(
 
 def check_ollama(base_url: Optional[str] = None, timeout: float = 3.0) -> bool:
     """Verifica rapidamente che il server Ollama sia raggiungibile."""
-    base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+    base_url = (base_url or resolve_base_url()).rstrip("/")
     try:
         response = requests.get(base_url + OLLAMA_TAGS_ENDPOINT, timeout=timeout)
         return response.status_code == 200
@@ -554,7 +646,7 @@ def check_ollama(base_url: Optional[str] = None, timeout: float = 3.0) -> bool:
 
 def list_local_models(base_url: Optional[str] = None, timeout: float = 5.0) -> List[str]:
     """Elenco dei modelli locali installati (GET /api/tags)."""
-    base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+    base_url = (base_url or resolve_base_url()).rstrip("/")
     try:
         response = requests.get(base_url + OLLAMA_TAGS_ENDPOINT, timeout=timeout)
         response.raise_for_status()
@@ -564,6 +656,40 @@ def list_local_models(base_url: Optional[str] = None, timeout: float = 5.0) -> L
             f"Non riesco a contattare Ollama su {base_url} per elencare i modelli."
         ) from exc
     return [model.get("name") for model in data.get("models", []) if model.get("name")]
+
+
+def list_local_models_info(
+    base_url: Optional[str] = None, timeout: float = 5.0
+) -> List[Dict[str, Any]]:
+    """Informazioni ricche dei modelli locali installati (GET /api/tags).
+
+    Ogni elemento contiene ``name``, ``size_bytes`` (dimensione su disco),
+    ``parameter_size`` e ``quantization``.
+
+    Raises:
+        OllamaUnavailableError: se il server non è raggiungibile o risponde male.
+    """
+    base_url = (base_url or resolve_base_url()).rstrip("/")
+    try:
+        response = requests.get(base_url + OLLAMA_TAGS_ENDPOINT, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException as exc:
+        raise OllamaUnavailableError(
+            f"Non riesco a contattare Ollama su {base_url} per elencare i modelli."
+        ) from exc
+    info: List[Dict[str, Any]] = []
+    for model in data.get("models", []):
+        if not model.get("name"):
+            continue
+        details = model.get("details") or {}
+        info.append({
+            "name": model.get("name"),
+            "size_bytes": model.get("size"),
+            "parameter_size": details.get("parameter_size"),
+            "quantization": details.get("quantization_level"),
+        })
+    return info
 
 
 _TAG_RE = re.compile(r"<[^>]+>")

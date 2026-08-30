@@ -12,6 +12,8 @@ Consumes:
 import json
 import logging
 import os
+import threading
+from typing import Optional
 
 from PyQt6.QtCore import (
     QEvent,
@@ -27,11 +29,14 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QBrush, QColor, QCursor
 from PyQt6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -45,15 +50,24 @@ from PyQt6.QtWidgets import (
 from core.analyzer import calculate_point_speed, haversine_distance
 from core.track import activity_display_name
 from core.ai_agent import (
-    DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    KNOWN_DOWNLOADABLE_MODELS,
     KNOWN_LOCAL_MODELS,
+    KNOWN_MODEL_SUGGESTIONS,
     OllamaUnavailableError,
     build_comparison_snapshot,
     generate_ai_comparison,
     generate_offline_fallback_report,
-    list_local_models,
+    get_model_suggestions,
+    is_valid_model_name,
+    list_local_models_info,
+    resolve_base_url,
     run_agentic_comparison,
+)
+from core.ollama_embedded import (
+    OllamaEmbeddedError,
+    get_ollama_manager,
+    human_size,
 )
 
 log = logging.getLogger(__name__)
@@ -153,6 +167,32 @@ class _WorkerSignals(QObject):
     models_loaded = pyqtSignal(list)
 
 
+def _safe_emit(signal, *args) -> None:
+    """Emitte un segnale ignorando l'errore se il ricevente è già distrutto.
+
+    Alla chiusura dell'app il dialog può essere eliminato mentre un worker è
+    ancora in volo: senza questa guardia l'``emit`` solleva RuntimeError
+    ("wrapped C/C++ object has been deleted") e termina il processo.
+    """
+    try:
+        signal.emit(*args)
+    except RuntimeError:
+        log.debug("Ricevente già distrutto: segnale non consegnato")
+
+
+def _make_model_completer(names) -> QCompleter:
+    """Completer per i nomi dei modelli: case-insensitive, match "contiene".
+
+    Digitando ad esempio ``qwen`` propone tutti i ``qwen2.5:*``; il popup
+    appare durante la digitazione e Invio/doppio click completa il nome.
+    """
+    completer = QCompleter(sorted(set(names)))
+    completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    return completer
+
+
 class _AIAnalysisWorker(QRunnable):
     """Esegue la generazione del report IA fuori dal thread della GUI."""
 
@@ -178,15 +218,15 @@ class _AIAnalysisWorker(QRunnable):
                 base_url=self._base_url,
                 timeout=self._timeout,
             )
-            self.signals.finished.emit("ai", report)
+            _safe_emit(self.signals.finished, "ai", report)
         except OllamaUnavailableError as exc:
             fallback = generate_offline_fallback_report(
                 self._segments, self._name_a, self._name_b, str(exc)
             )
-            self.signals.finished.emit("offline", fallback)
+            _safe_emit(self.signals.finished, "offline", fallback)
         except Exception as exc:  # noqa: BLE001
             log.exception("Analisi IA fallita inaspettatamente")
-            self.signals.finished.emit("error", str(exc))
+            _safe_emit(self.signals.finished, "error", str(exc))
 
 
 class _AIAgentWorker(QRunnable):
@@ -224,15 +264,15 @@ class _AIAgentWorker(QRunnable):
                     for step in transcript
                 )
                 report = f"{report}\n\n---\n**Strumenti usati dall'agente:**\n{steps}"
-            self.signals.finished.emit("ai", report)
+            _safe_emit(self.signals.finished, "ai", report)
         except OllamaUnavailableError as exc:
             fallback = generate_offline_fallback_report(
                 self._segments, self._name_a, self._name_b, str(exc)
             )
-            self.signals.finished.emit("offline", fallback)
+            _safe_emit(self.signals.finished, "offline", fallback)
         except Exception as exc:  # noqa: BLE001
             log.exception("Agente IA fallito inaspettatamente")
-            self.signals.finished.emit("error", str(exc))
+            _safe_emit(self.signals.finished, "error", str(exc))
 
 
 class _OllamaModelsWorker(QRunnable):
@@ -247,10 +287,83 @@ class _OllamaModelsWorker(QRunnable):
     @pyqtSlot()
     def run(self):
         try:
-            models = list_local_models(self._base_url, timeout=self._timeout)
+            models = list_local_models_info(self._base_url, timeout=self._timeout)
         except OllamaUnavailableError:
             models = []
-        self.signals.models_loaded.emit(models)
+        _safe_emit(self.signals.models_loaded, models)
+
+
+class _EngineSignals(QObject):
+    """Segnali del setup del motore IA locale."""
+
+    # (status, percentuale o None) durante avvio/download modello
+    progress = pyqtSignal(str, object)
+    # (base_url o None, messaggio d'errore vuoto se tutto ok)
+    ready = pyqtSignal(object, str)
+    # dizionario con lo stato di motore/modello per la label dedicata
+    status_ready = pyqtSignal(dict)
+
+
+class _EngineSetupWorker(QRunnable):
+    """Avvia il motore Ollama embedded e scarica il modello se necessario.
+
+    Esegue fuori dal thread GUI le operazioni potenzialmente lunghe: avvio del
+    processo ``ollama serve`` e download del modello via ``POST /api/pull``.
+    """
+
+    def __init__(self, model: str, cancel_event: threading.Event):
+        super().__init__()
+        self.signals = _EngineSignals()
+        self._model = model
+        self._cancel_event = cancel_event
+
+    @pyqtSlot()
+    def run(self):
+        manager = get_ollama_manager()
+        try:
+            base_url = manager.start()
+            manager.ensure_model(
+                self._model,
+                progress_cb=lambda status, percent: _safe_emit(
+                    self.signals.progress, status, percent
+                ),
+                cancel_event=self._cancel_event,
+            )
+            _safe_emit(self.signals.ready, base_url, "")
+        except OllamaEmbeddedError as exc:
+            _safe_emit(self.signals.ready, None, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Avvio del motore IA fallito inaspettatamente")
+            _safe_emit(self.signals.ready, None, str(exc))
+
+
+class _EngineStatusWorker(QRunnable):
+    """Rileva in background lo stato del motore e del modello selezionato."""
+
+    def __init__(self, model: str):
+        super().__init__()
+        self.signals = _EngineSignals()
+        self._model = model
+
+    @pyqtSlot()
+    def run(self):
+        manager = get_ollama_manager()
+        status = {
+            "model": self._model,
+            "running": False,
+            "base_url": None,
+            "installed": False,
+            "size_human": None,
+            "quantization": None,
+        }
+        try:
+            if manager.is_running:
+                status["running"] = True
+                status["base_url"] = manager.base_url
+                status.update(manager.model_status(self._model))
+        except Exception:  # noqa: BLE001
+            log.debug("Rilevamento dello stato del motore fallito", exc_info=True)
+        _safe_emit(self.signals.status_ready, status)
 
 
 class InsightDialog(QDialog):
@@ -400,6 +513,13 @@ class InsightDialog(QDialog):
         self.ai_agent_button.clicked.connect(self._on_ai_agent_clicked)
         ai_controls.addWidget(self.ai_agent_button, 0)
 
+        self.ai_download_button = QPushButton("⬇ Scarica modelli…")
+        self.ai_download_button.setToolTip(
+            "Mostra i modelli IA disponibili e scarica quello selezionato."
+        )
+        self.ai_download_button.clicked.connect(self._on_download_models_clicked)
+        ai_controls.addWidget(self.ai_download_button, 0)
+
         ai_controls.addWidget(QLabel("Modello:"))
         self.ai_model_combo = QComboBox()
         self.ai_model_combo.setEditable(True)
@@ -419,13 +539,22 @@ class InsightDialog(QDialog):
         ai_controls.addWidget(self.ai_status_label, 0)
         ai_layout.addLayout(ai_controls)
 
+        # Stato persistente di motore e modello (rilevato in background).
+        self.ai_engine_status_label = QLabel("")
+        self.ai_engine_status_label.setStyleSheet("color: #6a737d; font-size: 11px;")
+        self.ai_engine_status_label.setWordWrap(True)
+        ai_layout.addWidget(self.ai_engine_status_label)
+        self._refresh_engine_status()
+        self._set_model_completer()
+
         self.ai_text = QTextEdit()
         self.ai_text.setReadOnly(True)
         self.ai_text.setPlaceholderText(
             'Premi "✨ Analisi IA" per un report conversazionale del confronto,\n'
             'oppure "🤖 Agente" per l\'analisi agentica con tool-calling.\n'
-            "Richiede Ollama in esecuzione (es. `ollama pull qwen2.5:7b`).\n"
-            "Se Ollama non è disponibile verrà mostrata l'analisi offline del Coach."
+            "Il motore IA locale viene avviato automaticamente al primo utilizzo:\n"
+            "il modello (es. qwen2.5:0.5b) viene scaricato una sola volta.\n"
+            "Se il motore non è disponibile verrà mostrata l'analisi offline del Coach."
         )
         ai_layout.addWidget(self.ai_text)
 
@@ -433,9 +562,7 @@ class InsightDialog(QDialog):
         splitter.setSizes([400, 200, 200])
 
         # Carica l'elenco dei modelli locali senza bloccare la finestra.
-        models_worker = _OllamaModelsWorker(
-            os.environ.get("DUOTRACK_OLLAMA_URL", DEFAULT_BASE_URL)
-        )
+        models_worker = _OllamaModelsWorker(resolve_base_url())
         models_worker.signals.models_loaded.connect(self._on_models_loaded)
         models_worker.signals.models_loaded.connect(
             lambda *_args, w=models_worker: _WorkerKeeper.release(w)
@@ -569,11 +696,13 @@ class InsightDialog(QDialog):
             )
             return
 
-        model = self.ai_model_combo.currentText().strip()
-        if not model:
-            model = DEFAULT_MODEL
-        base_url = os.environ.get("DUOTRACK_OLLAMA_URL", DEFAULT_BASE_URL)
+        model = self.ai_model_combo.currentText().strip() or DEFAULT_MODEL
+        self._ensure_local_engine(
+            model, lambda base_url: self._start_ai_analysis(model, base_url)
+        )
 
+    def _start_ai_analysis(self, model: str, base_url: str):
+        """Costruisce lo snapshot e avvia il worker di analisi conversazionale."""
         try:
             snapshot = build_comparison_snapshot(self.track_a, self.track_b, self.segments)
         except Exception as exc:  # noqa: BLE001
@@ -618,8 +747,12 @@ class InsightDialog(QDialog):
             return
 
         model = self.ai_model_combo.currentText().strip() or DEFAULT_MODEL
-        base_url = os.environ.get("DUOTRACK_OLLAMA_URL", DEFAULT_BASE_URL)
+        self._ensure_local_engine(
+            model, lambda base_url: self._start_ai_agent(model, base_url)
+        )
 
+    def _start_ai_agent(self, model: str, base_url: str):
+        """Costruisce lo snapshot e avvia il worker del loop agentico."""
         try:
             snapshot = build_comparison_snapshot(self.track_a, self.track_b, self.segments)
         except Exception as exc:  # noqa: BLE001
@@ -655,6 +788,155 @@ class InsightDialog(QDialog):
         _WorkerKeeper.track(worker)
         QThreadPool.globalInstance().start(worker)
 
+    def _set_model_completer(self, extra_names=None) -> None:
+        """Attacca un completer (match "contiene") alla combo dei modelli.
+
+        I suggerimenti uniscono la lista statica di nomi popolari, il catalogo
+        scaricabile e i modelli realmente installati sul motore.
+        """
+        installed: list = []
+        manager = get_ollama_manager()
+        try:
+            if manager.is_running:
+                installed = [i["name"] for i in manager.available_models_info()]
+        except Exception:  # noqa: BLE001
+            log.debug("Lettura dei modelli installati fallita", exc_info=True)
+        names = get_model_suggestions(list(extra_names or []) + installed)
+        self.ai_model_combo.setCompleter(_make_model_completer(names))
+
+    def _refresh_engine_status(self, model: Optional[str] = None) -> None:
+        """Avvia in background il rilevamento dello stato motore/modello."""
+        if model is None:
+            model = self.ai_model_combo.currentText().strip() or DEFAULT_MODEL
+        worker = _EngineStatusWorker(model)
+        worker.signals.status_ready.connect(self._on_engine_status)
+        worker.signals.status_ready.connect(
+            lambda *_args, w=worker: _WorkerKeeper.release(w)
+        )
+        _WorkerKeeper.track(worker)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_engine_status(self, status: dict) -> None:
+        """Mostra lo stato del motore e del modello nella label dedicata."""
+        model = status.get("model", "")
+        if status.get("running"):
+            base_url = status.get("base_url", "")
+            if status.get("installed"):
+                text = f"🟢 Motore attivo su {base_url} — {model} pronto su disco"
+                details = [x for x in (status.get("size_human"),
+                                       status.get("quantization")) if x]
+                if details:
+                    text += f" ({', '.join(details)})"
+            else:
+                text = (f"🟡 Motore attivo su {base_url} — {model} verrà "
+                        f"scaricato al primo utilizzo")
+        else:
+            text = ("⚪ Motore non avviato — verrà avviato automaticamente "
+                    "al primo utilizzo dell'IA")
+        self.ai_engine_status_label.setText(text)
+
+    def _on_download_models_clicked(self):
+        """Apre il dialog con l'elenco dei modelli scaricabili."""
+        dialog = ModelDownloadDialog(self)
+        dialog.download_requested.connect(self._on_model_download_requested)
+        dialog.exec()
+
+    def _on_model_download_requested(self, model: str):
+        """Avvia il download del modello scelto (stesso flusso del setup)."""
+        self._ensure_local_engine(
+            model, lambda base_url: self._on_model_downloaded(model)
+        )
+
+    def _on_model_downloaded(self, model: str):
+        """A download completato: aggiorna combo, selezione e stato."""
+        models_worker = _OllamaModelsWorker(resolve_base_url())
+        models_worker.signals.models_loaded.connect(self._on_models_loaded)
+        models_worker.signals.models_loaded.connect(
+            lambda *_args, w=models_worker: _WorkerKeeper.release(w)
+        )
+        _WorkerKeeper.track(models_worker)
+        QThreadPool.globalInstance().start(models_worker)
+
+        self.ai_model_combo.setCurrentText(model)
+        self._refresh_engine_status(model)
+        self.ai_status_label.setText(f"{model} pronto")
+
+    def _ensure_local_engine(self, model: str, on_ready) -> None:
+        """Garantisce motore avviato e modello presente, poi chiama ``on_ready``.
+
+        Percorso veloce: se il motore è già attivo e il modello installato,
+        ``on_ready(base_url)`` viene chiamato subito senza dialog. Altrimenti
+        si apre un dialog di progresso mentre un worker avvia il server e
+        (solo alla prima esecuzione) scarica il modello richiesto.
+        """
+        manager = get_ollama_manager()
+        if manager.is_running:
+            try:
+                if manager.has_model(model):
+                    on_ready(manager.base_url)
+                    return
+            except Exception:  # noqa: BLE001
+                log.debug("Controllo rapido modelli fallito", exc_info=True)
+
+        self.ai_button.setEnabled(False)
+        if hasattr(self, "ai_agent_button"):
+            self.ai_agent_button.setEnabled(False)
+        self.ai_status_label.setText("Avvio motore IA locale…")
+
+        cancel_event = threading.Event()
+        dialog = QProgressDialog("Avvio del motore IA locale…", "Annulla", 0, 0, self)
+        dialog.setWindowTitle("Motore IA locale")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(380)
+        dialog.canceled.connect(cancel_event.set)
+        dialog.show()
+
+        self._engine_dialog = dialog
+        self._engine_on_ready = on_ready
+
+        worker = _EngineSetupWorker(model, cancel_event)
+        worker.signals.progress.connect(self._on_engine_progress)
+        worker.signals.ready.connect(self._on_engine_ready)
+        worker.signals.ready.connect(lambda *_args, w=worker: _WorkerKeeper.release(w))
+        _WorkerKeeper.track(worker)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_engine_progress(self, status: str, percent) -> None:
+        """Aggiorna il dialog di progresso con lo stato del pull."""
+        dialog = getattr(self, "_engine_dialog", None)
+        if dialog is None:
+            return
+        text = str(status)
+        if percent is not None:
+            text = f"{status} ({percent:.0f}%)"
+        dialog.setLabelText(text)
+
+    def _on_engine_ready(self, base_url, error: str) -> None:
+        """Esito del setup del motore: prosegue con l'azione richiesta."""
+        dialog = getattr(self, "_engine_dialog", None)
+        if dialog is not None:
+            dialog.reset()
+            dialog.close()
+            self._engine_dialog = None
+        on_ready = getattr(self, "_engine_on_ready", None)
+        self._engine_on_ready = None
+
+        if base_url is None:
+            # Riabilita i pulsanti: l'azione non partirà.
+            self.ai_button.setEnabled(True)
+            if hasattr(self, "ai_agent_button"):
+                self.ai_agent_button.setEnabled(True)
+            self.ai_status_label.setText("Motore IA non disponibile")
+            if error:
+                QMessageBox.warning(self, "Motore IA locale", error)
+            return
+
+        self.ai_status_label.setText("")
+        if on_ready is not None:
+            on_ready(base_url)
+        self._refresh_engine_status()
+
     def _on_ai_finished(self, kind: str, text: str):
         """Gestisce l'esito del worker di analisi IA o dell'agente."""
         self.ai_button.setEnabled(True)
@@ -675,24 +957,163 @@ class InsightDialog(QDialog):
                 self,
                 "Analisi IA",
                 f"Errore durante l'analisi:\n{text}\n\n"
-                "Verifica che Ollama sia avviato e che il modello sia scaricato "
-                "(`ollama pull qwen2.5:7b`).",
+                "Suggerimento: riprova oppure seleziona un modello più piccolo "
+                "(i modelli vengono scaricati automaticamente al primo uso).",
             )
 
     def _on_models_loaded(self, models):
         """Aggiorna la combo dei modelli con quelli realmente installati."""
-        if not models:
+        names = [
+            entry["name"] if isinstance(entry, dict) else entry
+            for entry in (models or [])
+        ]
+        if not names:
             return
         current = self.ai_model_combo.currentText()
         self.ai_model_combo.clear()
-        for model in models:
-            self.ai_model_combo.addItem(model)
+        for name in names:
+            self.ai_model_combo.addItem(name)
         if current:
             self.ai_model_combo.setCurrentText(current)
         else:
             default_idx = self.ai_model_combo.findText(DEFAULT_MODEL)
             if default_idx >= 0:
                 self.ai_model_combo.setCurrentIndex(default_idx)
+        # Aggiorna i suggerimenti con i modelli realmente installati.
+        self._set_model_completer(names)
+
+
+class ModelDownloadDialog(QDialog):
+    """Elenco dei modelli IA scaricabili con stato di installazione e dimensione.
+
+    Emette ``download_requested(model)`` quando l'utente conferma il download:
+    il parent (``InsightDialog``) riusa il flusso di setup del motore con la
+    progress bar per scaricare il modello selezionato.
+    """
+
+    download_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Modelli IA scaricabili")
+        self.resize(620, 340)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Seleziona un modello e premi \"⬇ Scarica\". Il download avviene "
+            "una sola volta: il modello resta su disco e funziona offline."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        # Modello personalizzato: qualsiasi nome valido di ollama.com/library.
+        custom_row = QHBoxLayout()
+        self.custom_model_edit = QLineEdit()
+        self.custom_model_edit.setPlaceholderText(
+            "Modello personalizzato, es. deepseek-r1:1.5b o qwen2.5:3b"
+        )
+        self.custom_model_edit.returnPressed.connect(self._on_download_custom_clicked)
+        custom_row.addWidget(self.custom_model_edit, 1)
+        custom_button = QPushButton("⬇ Scarica questo")
+        custom_button.clicked.connect(self._on_download_custom_clicked)
+        custom_row.addWidget(custom_button)
+        layout.addLayout(custom_row)
+
+        custom_hint = QLabel(
+            "Suggerimento: funziona qualsiasi modello presente su "
+            "ollama.com/library — senza tag viene usato :latest."
+        )
+        custom_hint.setStyleSheet("color: #6a737d; font-size: 11px;")
+        custom_hint.setWordWrap(True)
+        layout.addWidget(custom_hint)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Modello", "Stato", "Note"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.table.setColumnWidth(0, 130)
+        self.table.setColumnWidth(1, 180)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table, 1)
+
+        # Stato di installazione reale dal motore, se attivo (chiamata locale).
+        installed: dict = {}
+        manager = get_ollama_manager()
+        try:
+            if manager.is_running:
+                for info in manager.available_models_info():
+                    installed[info["name"].split(":")[0]] = info
+        except Exception:  # noqa: BLE001
+            log.debug("Impossibile leggere i modelli installati", exc_info=True)
+
+        # Autocomplete: suggerimenti popolari + modelli realmente installati.
+        installed_names = [info["name"] for info in installed.values()]
+        self.custom_model_edit.setCompleter(
+            _make_model_completer(get_model_suggestions(installed_names))
+        )
+
+        self.table.setRowCount(len(KNOWN_DOWNLOADABLE_MODELS))
+        for row, entry in enumerate(KNOWN_DOWNLOADABLE_MODELS):
+            base_name = entry["name"].split(":")[0]
+            info = installed.get(base_name)
+            if info:
+                size = info.get("size_human") or human_size(info.get("size_bytes")) or "?"
+                state_text = f"✓ installato ({size})"
+            else:
+                state_text = f"≈ {entry['size_gb']:.1f} GB (da scaricare)"
+
+            name_item = QTableWidgetItem(entry["name"])
+            state_item = QTableWidgetItem(state_text)
+            if info:
+                state_item.setForeground(QBrush(QColor("#2ecc71")))
+            note_item = QTableWidgetItem(entry["desc"])
+            self.table.setItem(row, 0, name_item)
+            self.table.setItem(row, 1, state_item)
+            self.table.setItem(row, 2, note_item)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        download_button = QPushButton("⬇ Scarica")
+        download_button.clicked.connect(self._on_download_clicked)
+        buttons.addWidget(download_button)
+        close_button = QPushButton("Chiudi")
+        close_button.clicked.connect(self.reject)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def _on_download_clicked(self):
+        """Emette il modello selezionato e chiude il dialog."""
+        row = self.table.currentRow()
+        if row < 0 or row >= len(KNOWN_DOWNLOADABLE_MODELS):
+            QMessageBox.information(
+                self, "Download modello",
+                "Seleziona prima un modello dalla lista.",
+            )
+            return
+        self.download_requested.emit(KNOWN_DOWNLOADABLE_MODELS[row]["name"])
+        self.accept()
+
+    def _on_download_custom_clicked(self):
+        """Valida il nome digitato ed emette il download del modello custom."""
+        name = self.custom_model_edit.text().strip()
+        if not is_valid_model_name(name):
+            QMessageBox.information(
+                self,
+                "Nome modello non valido",
+                f'"{name or "(vuoto)"}" non è un nome di modello valido.\n\n'
+                "Usa il formato nome:tag come compare su ollama.com/library, "
+                "per esempio qwen2.5:3b oppure deepseek-r1:1.5b "
+                "(senza tag viene usato :latest).",
+            )
+            return
+        self.download_requested.emit(name)
+        self.accept()
 
 
 class SegmentDetailDialog(QDialog):
